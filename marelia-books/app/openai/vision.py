@@ -63,10 +63,18 @@ class OpenAIVisionClient:
             "max_output_tokens": 500,
         }
 
+        logger.info("Enviando imagen a OpenAI (%d bytes)", len(image_bytes))
         response = await self._request_with_retry("https://api.openai.com/v1/responses", payload)
         data = response.json()
         output_text = self._extract_text_output(data)
+        logger.debug("Respuesta cruda de OpenAI: %r", output_text[:300])
         extraction = parse_vision_json(output_text)
+        logger.info(
+            "OpenAI: es libro=%s  título=%r  confianza=%.0f%%",
+            extraction.is_book_cover,
+            extraction.title,
+            extraction.confidence * 100,
+        )
         return extraction
 
     async def _request_with_retry(self, url: str, payload: dict[str, Any], max_attempts: int = 4) -> httpx.Response:
@@ -79,7 +87,7 @@ class OpenAIVisionClient:
                 if response.status_code in (429, 500, 502, 503, 504):
                     retry_after = float(response.headers.get("Retry-After", delay))
                     logger.warning(
-                        "event=openai_retry status=%s attempt=%s retry_after=%s",
+                        "OpenAI respondió %s — reintentando (intento %s, esperando %ss)",
                         response.status_code,
                         attempt,
                         retry_after,

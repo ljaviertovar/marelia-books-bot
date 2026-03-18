@@ -156,6 +156,7 @@ class NotionClient:
         await self._client.aclose()
 
     async def query_candidate_books(self, title: str) -> list[dict[str, Any]]:
+        logger.info("Buscando en Notion: %r", title[:50])
         payload: dict[str, Any] = {
             "page_size": 50,
             "filter": {
@@ -166,9 +167,12 @@ class NotionClient:
         response = await self._request_with_retry(
             "POST", f"https://api.notion.com/v1/databases/{self._database_id}/query", json=payload
         )
-        return response.json().get("results", [])
+        results = response.json().get("results", [])
+        logger.info("Notion: %d resultado(s) para %r", len(results), title[:50])
+        return results
 
     async def create_book_page(self, metadata: ResolvedBookMetadata) -> str:
+        logger.info("Creando página en Notion: '%s' de %s", metadata.title, metadata.author or "autor desconocido")
         payload = {
             "parent": {"database_id": self._database_id},
             "template": {
@@ -178,19 +182,24 @@ class NotionClient:
             "properties": build_create_properties(metadata),
         }
         response = await self._request_with_retry("POST", "https://api.notion.com/v1/pages", json=payload)
-        return response.json()["id"]
+        page_id = response.json()["id"]
+        logger.info("Página creada exitosamente en Notion [id=%s]", page_id)
+        return page_id
 
     async def update_book_page_missing(self, page: dict[str, Any], metadata: ResolvedBookMetadata) -> bool:
         updates = build_missing_update_properties(page, metadata)
         if not updates:
+            logger.debug("Sin campos que actualizar en Notion [page_id=%s]", page.get("id"))
             return False
 
         page_id = page["id"]
+        logger.info("Actualizando campos en Notion: %s [page_id=%s]", list(updates.keys()), page_id)
         await self._request_with_retry(
             "PATCH",
             f"https://api.notion.com/v1/pages/{page_id}",
             json={"properties": updates},
         )
+        logger.info("Campos actualizados en Notion [page_id=%s]", page_id)
         return True
 
     async def _request_with_retry(self, method: str, url: str, *, json: dict[str, Any], max_attempts: int = 4) -> httpx.Response:
@@ -203,7 +212,7 @@ class NotionClient:
                 if response.status_code in (429, 500, 502, 503, 504):
                     retry_after = float(response.headers.get("Retry-After", delay))
                     logger.warning(
-                        "event=notion_retry status=%s attempt=%s retry_after=%s",
+                        "Notion respondió %s — reintentando (intento %s, esperando %ss)",
                         response.status_code,
                         attempt,
                         retry_after,

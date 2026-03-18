@@ -38,24 +38,26 @@ class BookService:
         self._dry_run = dry_run
 
     async def process_text_command(self, title: str) -> ProcessResult:
+        logger.info("Agregando libro por título: %s", title)
         resolved = await self._resolver.resolve(title=title)
         logger.info(
-            "event=metadata_resolution title=%s author=%s categories=%s",
+            "Metadatos resueltos: '%s' — %s",
             resolved.title,
-            resolved.author,
-            ",".join(resolved.categories),
+            resolved.author or "sin autor",
         )
         return await self._upsert_book(resolved)
 
     async def process_image_command(self, file_id: str) -> ProcessResult:
+        logger.info("Procesando imagen de portada")
         image_bytes, mime_type = await self._telegram.download_file(file_id)
+        logger.debug("Imagen descargada (%d bytes, %s)", len(image_bytes), mime_type)
         extraction = await self._vision.extract_book_data(image_bytes, mime_type)
 
         logger.info(
-            "event=extracted_vision title=%s author=%s confidence=%s",
-            extraction.title,
-            ",".join(extraction.authors),
-            extraction.confidence,
+            "OpenAI detectó: '%s' por %s (confianza %.0f%%)",
+            extraction.title or "desconocido",
+            extraction.authors[0] if extraction.authors else "autor desconocido",
+            extraction.confidence * 100,
         )
 
         check = self._validate_vision(extraction)
@@ -69,10 +71,9 @@ class BookService:
             resolved.series = extraction.series_or_edition
 
         logger.info(
-            "event=metadata_resolution title=%s author=%s categories=%s",
+            "Metadatos resueltos: '%s' — %s",
             resolved.title,
-            resolved.author,
-            ",".join(resolved.categories),
+            resolved.author or "sin autor",
         )
         return await self._upsert_book(resolved)
 
@@ -110,23 +111,23 @@ class BookService:
             get_author=get_page_author,
         )
 
-        logger.info("event=duplicate_detection found=%s candidates=%s", bool(existing), len(candidates))
+        logger.info("Duplicado: %s (%d candidato(s))", "sí" if existing else "no", len(candidates))
 
         if existing:
             if self._dry_run:
-                logger.info("event=action_update dry_run=true")
+                logger.info("[DRY RUN] El libro ya existe — se actualizarían campos")
                 return ProcessResult(ok=True, message=f"[DRY_RUN] Book already exists. Missing fields would be updated: {metadata.title}")
 
             changed = await self._notion.update_book_page_missing(existing, metadata)
-            logger.info("event=action_update changed=%s", changed)
+            logger.info("Campos faltantes actualizados: %s", changed)
             if changed:
                 return ProcessResult(ok=True, message=f"Updated missing fields for: {metadata.title}")
             return ProcessResult(ok=True, message=f"Book already up to date: {metadata.title}")
 
         if self._dry_run:
-            logger.info("event=action_create dry_run=true")
+            logger.info("[DRY RUN] Se crearía el libro en Notion")
             return ProcessResult(ok=True, message=f"[DRY_RUN] Book would be created: {metadata.title}")
 
         page_id = await self._notion.create_book_page(metadata)
-        logger.info("event=action_create page_id=%s", page_id)
+        logger.info("Libro creado en Notion [id=%s]", page_id)
         return ProcessResult(ok=True, message=f"Added: {metadata.title}")

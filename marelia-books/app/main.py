@@ -1,5 +1,4 @@
 from __future__ import annotations
-from dotenv import load_dotenv
 
 import logging
 
@@ -20,9 +19,16 @@ from app.telegram.handler import (
 
 configure_logging()
 logger = logging.getLogger(__name__)
-settings = get_settings()
 
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:
+    load_dotenv = None
+
+if load_dotenv is not None:
+    load_dotenv()
+
+settings = get_settings()
 
 app = FastAPI(title="Marelia Books")
 
@@ -53,22 +59,26 @@ async def health() -> dict[str, str]:
 async def telegram_webhook(request: Request) -> dict[str, bool]:
     payload = await request.json()
     update = TelegramUpdate.model_validate(payload)
+    logger.debug("Update recibido [id=%s]", update.update_id)
 
     if deduplicator.is_duplicate(update.update_id):
+        logger.debug("Update duplicado, ignorado [id=%s]", update.update_id)
         return {"ok": True}
 
     if not update.message:
+        logger.debug("Sin mensaje en el update [id=%s]", update.update_id)
         return {"ok": True}
 
     chat_id = update.message.chat.id
     if chat_id not in settings.allowed_chat_ids:
-        logger.info("event=unauthorized_chat chat_id=%s", chat_id)
+        logger.warning("Chat no autorizado [chat_id=%s]", chat_id)
         return {"ok": True}
 
     command = parse_supported_command(update.message)
     log_incoming_command(update, command)
 
     if not command:
+        logger.info("Comando no reconocido [chat_id=%s]", chat_id)
         await telegram_client.send_message(
             chat_id,
             "Unsupported input. Use 'Add Book <title>' or send a photo with caption 'Add Book'.",
@@ -84,10 +94,11 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
             await telegram_client.send_message(chat_id, "Unsupported input.")
             return {"ok": True}
 
+        logger.info("Respuesta enviada [chat_id=%s]: %s", chat_id, result.message)
         await telegram_client.send_message(chat_id, result.message)
         return {"ok": True}
     except Exception as exc:
-        logger.exception("event=processing_error error=%s", exc)
+        logger.exception("Error al procesar el mensaje: %s", exc)
         await telegram_client.send_message(
             chat_id, "Failed to process book request. Please try again."
         )
