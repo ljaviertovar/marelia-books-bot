@@ -7,7 +7,7 @@ from typing import Protocol
 from app.books.deduplication import find_matching_page
 from app.books.metadata import BookCandidate, MetadataResolver, ResolvedBookMetadata, VisionBookExtraction
 from app.notion.client import NotionClient
-from app.openai.vision import OpenAIVisionClient
+from app.gemini.vision import GeminiVisionClient
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ class BookService:
         self,
         notion_client: NotionClient,
         telegram_client: TelegramGateway,
-        vision_client: OpenAIVisionClient,
+        vision_client: GeminiVisionClient,
         metadata_resolver: MetadataResolver,
         dry_run: bool,
     ) -> None:
@@ -94,7 +94,7 @@ class BookService:
         extraction = await self._vision.extract_book_data(image_bytes, mime_type)
 
         logger.info(
-            "OpenAI detectó: '%s' por %s (confianza %.0f%%)",
+            "Gemini detectó: '%s' por %s (confianza %.0f%%)",
             extraction.title or "desconocido",
             extraction.authors[0] if extraction.authors else "autor desconocido",
             extraction.confidence * 100,

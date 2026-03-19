@@ -3,7 +3,7 @@ from app.config import get_settings
 
 def test_get_settings_reads_environment(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-token")
-    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
     monkeypatch.setenv("NOTION_API_KEY", "notion-key")
     monkeypatch.setenv("NOTION_DATABASE_ID", "cf61817bf7424e09b0cfb48122716977")
     monkeypatch.setenv("NOTION_TEMPLATE_ID", "b720c6b05ff64f26bab6bdb4e8fe8740")
@@ -13,7 +13,7 @@ def test_get_settings_reads_environment(monkeypatch):
     settings = get_settings()
 
     assert settings.telegram_bot_token == "telegram-token"
-    assert settings.openai_api_key == "openai-key"
+    assert settings.gemini_api_key == "gemini-key"
     assert settings.notion_api_key == "notion-key"
     assert settings.notion_database_id == "cf61817b-f742-4e09-b0cf-b48122716977"
     assert settings.notion_template_id == "b720c6b0-5ff6-4f26-bab6-bdb4e8fe8740"
@@ -23,7 +23,7 @@ def test_get_settings_reads_environment(monkeypatch):
 
 def test_get_settings_normalizes_notion_ids(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-token")
-    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
     monkeypatch.setenv("NOTION_API_KEY", "notion-key")
     monkeypatch.setenv("NOTION_DATABASE_ID", "https://www.notion.so/workspace/cf61817bf7424e09b0cfb48122716977")
     monkeypatch.setenv(
@@ -40,7 +40,7 @@ def test_get_settings_normalizes_notion_ids(monkeypatch):
 
 def test_get_settings_rejects_empty_allowed_chat_ids(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-token")
-    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
     monkeypatch.setenv("NOTION_API_KEY", "notion-key")
     monkeypatch.setenv("NOTION_DATABASE_ID", "cf61817bf7424e09b0cfb48122716977")
     monkeypatch.setenv("NOTION_TEMPLATE_ID", "b720c6b05ff64f26bab6bdb4e8fe8740")

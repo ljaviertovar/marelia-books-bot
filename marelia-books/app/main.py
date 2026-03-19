@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request
 from app.books.metadata import MetadataResolver
 from app.config import configure_logging, get_settings
 from app.notion.client import NotionClient
-from app.openai.vision import OpenAIVisionClient
+from app.gemini.vision import GeminiVisionClient
 from app.services.book_service import BookService
 from app.telegram.handler import (
     TelegramClient,
@@ -34,7 +34,7 @@ app = FastAPI(title="Marelia Books")
 
 deduplicator = UpdateDeduplicator()
 telegram_client = TelegramClient(settings.telegram_bot_token)
-vision_client = OpenAIVisionClient(settings.openai_api_key)
+vision_client = GeminiVisionClient(settings.gemini_api_key)
 notion_client = NotionClient(
     settings.notion_api_key,
     settings.notion_database_id,
