@@ -69,12 +69,18 @@ class OpenAIVisionClient:
         output_text = self._extract_text_output(data)
         logger.debug("Respuesta cruda de OpenAI: %r", output_text[:300])
         extraction = parse_vision_json(output_text)
-        logger.info(
-            "OpenAI: es libro=%s  título=%r  confianza=%.0f%%",
-            extraction.is_book_cover,
-            extraction.title,
-            extraction.confidence * 100,
-        )
+        logger.info("━" * 60)
+        logger.info("📖 OPENAI EXTRACTION RESULT")
+        logger.info("  is_book_cover : %s", extraction.is_book_cover)
+        logger.info("  title         : %r", extraction.title)
+        logger.info("  subtitle      : %r", extraction.subtitle)
+        logger.info("  authors       : %s", extraction.authors)
+        logger.info("  series        : %r", extraction.series_or_edition)
+        logger.info("  language      : %r", extraction.language)
+        logger.info("  confidence    : %.0f%%", extraction.confidence * 100)
+        if not extraction.is_book_cover:
+            logger.info("  reason        : %r", extraction.reason_if_not_book)
+        logger.info("━" * 60)
         return extraction
 
     async def _request_with_retry(self, url: str, payload: dict[str, Any], max_attempts: int = 4) -> httpx.Response:

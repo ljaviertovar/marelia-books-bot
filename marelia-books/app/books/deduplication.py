@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Iterable
+from typing import Any, Iterable
 
 
 _SPACE_RE = re.compile(r"\s+")
@@ -24,19 +24,20 @@ def make_book_key(title: str | None, author: str | None) -> str:
 
 
 def find_matching_page(
-    candidates: Iterable[dict],
+    candidates: Iterable[Any],
     incoming_title: str | None,
     incoming_author: str | None,
-    *,
-    get_title,
-    get_author,
-) -> dict | None:
+) -> Any | None:
+    """Find a matching record among candidates.
+
+    Candidates must expose ``.title`` and ``.author`` attributes
+    (e.g. ``NotionBookRecord``).
+    """
     incoming_key = make_book_key(incoming_title, incoming_author)
     if incoming_key == "|":
         return None
 
-    for page in candidates:
-        candidate_key = make_book_key(get_title(page), get_author(page))
-        if candidate_key == incoming_key:
-            return page
+    for record in candidates:
+        if make_book_key(record.title, record.author) == incoming_key:
+            return record
     return None

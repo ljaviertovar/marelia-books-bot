@@ -127,5 +127,5 @@ def parse_supported_command(message: TelegramMessage) -> ParsedCommand | None:
 
 def log_incoming_command(update: TelegramUpdate, command: ParsedCommand | None) -> None:
     chat_id = update.message.chat.id if update.message else None
-    kind = command.kind if command else "no reconocido"
-    logger.info("Mensaje recibido — tipo: %s [chat_id=%s]", kind, chat_id)
+    kind = command.kind if command else "unrecognized"
+    logger.info("Message received — type: %s [chat_id=%s]", kind, chat_id)
