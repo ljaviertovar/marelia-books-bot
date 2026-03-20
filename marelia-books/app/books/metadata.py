@@ -8,6 +8,33 @@ from pydantic import BaseModel, Field
 
 logger = __import__("logging").getLogger(__name__)
 
+# MARC/ISO 639-2 language codes → Spanish names (as returned by OpenLibrary)
+_LANGUAGE_CODE_MAP: dict[str, str] = {
+    "eng": "inglés",
+    "spa": "español",
+    "fre": "francés",
+    "ger": "alemán",
+    "ita": "italiano",
+    "por": "portugués",
+    "rus": "ruso",
+    "jpn": "japonés",
+    "chi": "chino",
+    "zho": "chino",
+    "ara": "árabe",
+    "dut": "neerlandés",
+    "swe": "sueco",
+    "nor": "noruego",
+    "dan": "danés",
+    "pol": "polaco",
+    "kor": "coreano",
+    "lat": "latín",
+    "tur": "turco",
+    "gre": "griego",
+    "heb": "hebreo",
+    "cat": "catalán",
+    "ukr": "ucraniano",
+}
+
 ALLOWED_CATEGORIES = {
     "Fantasy",
     "Sci-Fi",
@@ -85,6 +112,17 @@ class ResolvedBookMetadata(BaseModel):
     reading_type: str = "Physical"
     link: str | None = None
     type: str = "Book"
+    # Extended fields (from OpenLibrary or Gemini enrichment)
+    isbn: str | None = None
+    pages: int | None = None
+    year: int | None = None
+    publisher: str | None = None
+    language: str | None = None
+    title_es: str | None = None
+    genre_es: str | None = None
+    synopsis: str | None = None
+    publisher_url: str | None = None
+    tagline: str | None = None
 
 
 @dataclass
@@ -124,6 +162,63 @@ def infer_reading_type(raw: str | None) -> str:
     return "Physical"
 
 
+def resolve_openlibrary_cover_url(doc: dict[str, Any]) -> str | None:
+    """Pick the most edition-specific OpenLibrary cover URL available in a search doc."""
+    cover_edition_key = (doc.get("cover_edition_key") or "").strip()
+    if cover_edition_key:
+        return f"https://covers.openlibrary.org/b/olid/{cover_edition_key}-L.jpg"
+
+    edition_keys = doc.get("edition_key") or []
+    if edition_keys:
+        first_edition_key = str(edition_keys[0]).strip()
+        if first_edition_key:
+            return f"https://covers.openlibrary.org/b/olid/{first_edition_key}-L.jpg"
+
+    cover_i = doc.get("cover_i")
+    if cover_i:
+        return f"https://covers.openlibrary.org/b/id/{cover_i}-L.jpg"
+
+    return None
+
+
+def _extract_work_key(doc: dict[str, Any]) -> str | None:
+    key = str(doc.get("key") or "").strip()
+    if key.startswith("/works/"):
+        return key
+
+    works = doc.get("works") or []
+    if works:
+        first = works[0]
+        if isinstance(first, dict):
+            work_key = str(first.get("key") or "").strip()
+            if work_key.startswith("/works/"):
+                return work_key
+    return None
+
+
+def _extract_edition_key(doc: dict[str, Any]) -> str | None:
+    cover_edition_key = str(doc.get("cover_edition_key") or "").strip()
+    if cover_edition_key:
+        return cover_edition_key
+    edition_keys = doc.get("edition_key") or []
+    if edition_keys:
+        first = str(edition_keys[0]).strip()
+        if first:
+            return first
+    return None
+
+
+def _lang_name_from_edition_payload(payload: dict[str, Any]) -> str | None:
+    languages = payload.get("languages") or []
+    for item in languages:
+        if isinstance(item, dict):
+            key = str(item.get("key") or "").strip()
+            if key:
+                code = key.rsplit("/", 1)[-1].lower()
+                return _LANGUAGE_CODE_MAP.get(code, code)
+    return None
+
+
 class MetadataResolver:
     def __init__(self, timeout_seconds: float = 10.0) -> None:
         self._client = httpx.AsyncClient(timeout=timeout_seconds)
@@ -148,7 +243,8 @@ class MetadataResolver:
         return candidates
 
     async def resolve_from_candidate(self, candidate: BookCandidate) -> ResolvedBookMetadata:
-        return self._doc_to_metadata(candidate.raw_doc, candidate.title, candidate.author)
+        metadata = self._doc_to_metadata(candidate.raw_doc, candidate.title, candidate.author)
+        return await self._enrich_with_openlibrary_details(metadata, candidate.raw_doc)
 
     async def resolve(self, *, title: str, author: str | None = None) -> ResolvedBookMetadata:
         params = {"title": title, "limit": 5}
@@ -162,13 +258,85 @@ class MetadataResolver:
         if not docs:
             return ResolvedBookMetadata(title=title, author=author)
 
-        return self._doc_to_metadata(docs[0], title, author)
+        metadata = self._doc_to_metadata(docs[0], title, author)
+        return await self._enrich_with_openlibrary_details(metadata, docs[0])
+
+    async def _enrich_with_openlibrary_details(self, metadata: ResolvedBookMetadata, doc: dict[str, Any]) -> ResolvedBookMetadata:
+        """Get additional data from OpenLibrary edition/work endpoints before Gemini."""
+        updated = metadata.model_copy()
+        work_key = _extract_work_key(doc)
+        edition_key = _extract_edition_key(doc)
+
+        if edition_key:
+            try:
+                edition_resp = await self._client.get(f"https://openlibrary.org/books/{edition_key}.json")
+                edition_resp.raise_for_status()
+                edition = edition_resp.json()
+
+                if not updated.pages:
+                    pages_raw = edition.get("number_of_pages")
+                    if pages_raw is not None:
+                        updated.pages = int(pages_raw)
+
+                if not updated.publisher:
+                    publishers = edition.get("publishers") or []
+                    if publishers:
+                        updated.publisher = str(publishers[0]).strip() or None
+
+                if not updated.isbn:
+                    isbn_list = edition.get("isbn_13") or edition.get("isbn_10") or []
+                    if isbn_list:
+                        updated.isbn = str(isbn_list[0]).strip() or None
+
+                if not updated.language:
+                    updated.language = _lang_name_from_edition_payload(edition)
+
+                if not updated.cover_url:
+                    covers = edition.get("covers") or []
+                    if covers:
+                        updated.cover_url = f"https://covers.openlibrary.org/b/id/{covers[0]}-L.jpg"
+
+                if not work_key:
+                    works = edition.get("works") or []
+                    if works:
+                        first = works[0]
+                        if isinstance(first, dict):
+                            wk = str(first.get("key") or "").strip()
+                            if wk.startswith("/works/"):
+                                work_key = wk
+            except Exception as exc:
+                logger.debug("No se pudo enriquecer desde edition %s: %s", edition_key, exc)
+
+        if work_key:
+            try:
+                work_resp = await self._client.get(f"https://openlibrary.org{work_key}.json")
+                work_resp.raise_for_status()
+                work = work_resp.json()
+
+                if not updated.categories:
+                    subjects = work.get("subjects") or []
+                    updated.categories = map_categories(subjects)
+
+                if not updated.synopsis:
+                    description = work.get("description")
+                    if isinstance(description, str):
+                        updated.synopsis = description.strip() or None
+                    elif isinstance(description, dict):
+                        updated.synopsis = str(description.get("value") or "").strip() or None
+
+                if not updated.cover_url:
+                    covers = work.get("covers") or []
+                    if covers:
+                        updated.cover_url = f"https://covers.openlibrary.org/b/id/{covers[0]}-L.jpg"
+            except Exception as exc:
+                logger.debug("No se pudo enriquecer desde work %s: %s", work_key, exc)
+
+        return updated
 
     def _doc_to_metadata(self, doc: dict[str, Any], title: str, hint_author: str | None) -> ResolvedBookMetadata:
         resolved_title = (doc.get("title") or title).strip()
         resolved_author = (doc.get("author_name") or [hint_author])[0]
-        cover_i = doc.get("cover_i")
-        cover_url = f"https://covers.openlibrary.org/b/id/{cover_i}-L.jpg" if cover_i else None
+        cover_url = resolve_openlibrary_cover_url(doc)
         subjects = doc.get("subject") or []
         logger.debug("Subjects crudos de Open Library: %s", subjects[:20])
         categories = map_categories(subjects)
@@ -176,6 +344,17 @@ class MetadataResolver:
         series = (doc.get("series") or [None])[0]
         key = (doc.get("key") or "").strip()
         link = f"https://openlibrary.org{key}" if key else None
+
+        # Extended fields from OpenLibrary
+        isbn_list = doc.get("isbn_13") or doc.get("isbn_10") or []
+        isbn = isbn_list[0] if isbn_list else None
+        pages_raw = doc.get("number_of_pages_median")
+        pages = int(pages_raw) if pages_raw is not None else None
+        year = doc.get("first_publish_year") or None
+        publisher = (doc.get("publisher") or [None])[0]
+        lang_list = doc.get("language") or []
+        lang_code = lang_list[0] if lang_list else None
+        language = _LANGUAGE_CODE_MAP.get(lang_code, lang_code) if lang_code else None
 
         return ResolvedBookMetadata(
             title=resolved_title,
@@ -185,4 +364,9 @@ class MetadataResolver:
             categories=categories,
             reading_type=reading_type,
             link=link,
+            isbn=isbn,
+            pages=pages,
+            year=year,
+            publisher=publisher,
+            language=language,
         )

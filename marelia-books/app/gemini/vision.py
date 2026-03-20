@@ -14,6 +14,10 @@ logger = logging.getLogger(__name__)
 _GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
 
+class GeminiVisionQuotaError(RuntimeError):
+    """Raised when Gemini Vision quota is exhausted (HTTP 429)."""
+
+
 class GeminiVisionClient:
     def __init__(self, api_key: str, timeout_seconds: float = 30.0) -> None:
         self._api_key = api_key
@@ -91,7 +95,11 @@ class GeminiVisionClient:
         for attempt in range(1, max_attempts + 1):
             try:
                 response = await self._client.post(url, json=payload)
-                if response.status_code in (429, 500, 502, 503, 504):
+                if response.status_code == 429:
+                    logger.warning("Gemini Vision respondió 429 — cuota agotada, se omite visión")
+                    raise GeminiVisionQuotaError("HTTP 429 — Gemini Vision quota exhausted")
+
+                if response.status_code in (500, 502, 503, 504):
                     retry_after = float(response.headers.get("Retry-After", delay))
                     logger.warning(
                         "Gemini respondió %s — reintentando (intento %s, esperando %ss)",
@@ -99,6 +107,9 @@ class GeminiVisionClient:
                         attempt,
                         retry_after,
                     )
+                    last_error = RuntimeError(f"HTTP {response.status_code} después de {attempt} intento(s)")
+                    if attempt == max_attempts:
+                        break
                     await self._sleep(retry_after)
                     delay = max(delay * 2, retry_after)
                     continue

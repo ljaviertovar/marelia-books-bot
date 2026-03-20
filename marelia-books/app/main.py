@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request
 from app.books.metadata import MetadataResolver
 from app.config import configure_logging, get_settings
 from app.notion.client import NotionClient
+from app.gemini.enricher import GeminiEnricher
 from app.gemini.vision import GeminiVisionClient
 from app.services.book_service import BookService
 from app.telegram.handler import (
@@ -35,6 +36,7 @@ app = FastAPI(title="Marelia Books")
 deduplicator = UpdateDeduplicator()
 telegram_client = TelegramClient(settings.telegram_bot_token)
 vision_client = GeminiVisionClient(settings.gemini_api_key)
+enricher_client = GeminiEnricher(settings.gemini_api_key)
 notion_client = NotionClient(
     settings.notion_api_key,
     settings.notion_database_id,
@@ -46,6 +48,7 @@ book_service = BookService(
     telegram_client=telegram_client,
     vision_client=vision_client,
     metadata_resolver=metadata_resolver,
+    enricher=enricher_client,
     dry_run=settings.dry_run,
 )
 
@@ -107,7 +110,7 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
     except Exception as exc:
         logger.exception("Error al procesar el mensaje: %s", exc)
         await telegram_client.send_message(
-            chat_id, "Oops Taviz, something went wrong on my end 😕 Please try again in a moment!"
+            chat_id, "Oops Taviz,\n something went wrong on my end 😕 Please try again in a moment!"
         )
         return {"ok": True}
 

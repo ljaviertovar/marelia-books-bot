@@ -7,7 +7,8 @@ from typing import Protocol
 from app.books.deduplication import find_matching_page
 from app.books.metadata import BookCandidate, MetadataResolver, ResolvedBookMetadata, VisionBookExtraction
 from app.notion.client import NotionClient
-from app.gemini.vision import GeminiVisionClient
+from app.gemini.enricher import GeminiEnricher
+from app.gemini.vision import GeminiVisionClient, GeminiVisionQuotaError
 
 logger = logging.getLogger(__name__)
 
@@ -29,12 +30,14 @@ class BookService:
         telegram_client: TelegramGateway,
         vision_client: GeminiVisionClient,
         metadata_resolver: MetadataResolver,
+        enricher: GeminiEnricher,
         dry_run: bool,
     ) -> None:
         self._notion = notion_client
         self._telegram = telegram_client
         self._vision = vision_client
         self._resolver = metadata_resolver
+        self._enricher = enricher
         self._dry_run = dry_run
         self._pending: dict[int, list[BookCandidate]] = {}
 
@@ -91,7 +94,17 @@ class BookService:
         logger.info("Procesando imagen de portada")
         image_bytes, mime_type = await self._telegram.download_file(file_id)
         logger.debug("Imagen descargada (%d bytes, %s)", len(image_bytes), mime_type)
-        extraction = await self._vision.extract_book_data(image_bytes, mime_type)
+        try:
+            extraction = await self._vision.extract_book_data(image_bytes, mime_type)
+        except GeminiVisionQuotaError:
+            logger.warning("Gemini Vision sin cuota disponible — solicitando fallback manual por texto")
+            return ProcessResult(
+                ok=False,
+                message=(
+                    "Taviz, alcancé el limite de vision por ahora 😕 "
+                    "Mientras se libera la cuota, puedes agregarlo con texto: `Add Book <titulo>`."
+                ),
+            )
 
         logger.info(
             "Gemini detectó: '%s' por %s (confianza %.0f%%)",
@@ -163,6 +176,7 @@ class BookService:
             logger.info("[DRY RUN] Se crearía el libro en Notion")
             return ProcessResult(ok=True, message=f"[DRY RUN] I would add '{metadata.title}' to your Notion list, Taviz!")
 
+        metadata = await self._enricher.enrich(metadata)
         page_id = await self._notion.create_book_page(metadata)
         logger.info("Libro creado en Notion [id=%s]", page_id)
-        return ProcessResult(ok=True, message=f"Done, Taviz! ✨ I\'ve added '{metadata.title}' to your reading list 📚")
+        return ProcessResult(ok=True, message=f"Done, Taviz! ✨\nI\'ve added *{metadata.title}* to your reading list 📚")
