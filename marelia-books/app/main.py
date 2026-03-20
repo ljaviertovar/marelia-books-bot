@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import logging
 
 from fastapi import FastAPI, Request
@@ -50,7 +51,18 @@ book_service = BookService(
     metadata_resolver=metadata_resolver,
     enricher=enricher_client,
     dry_run=settings.dry_run,
+    contact_name=settings.telegram_contact_name,
 )
+
+
+def _hello_message() -> str:
+    name = html.escape(settings.telegram_contact_name)
+    return (
+        f"Hi {name} ✨\n\n"
+        "I'm here to help with your library.\n"
+        "You can use <code>/addbook &lt;title&gt;</code> or send a photo with the caption "
+        "<code>/scanbook</code>."
+    )
 
 
 @app.get("/health")
@@ -108,7 +120,7 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
                 logger.info("Comando no reconocido [chat_id=%s]", chat_id)
                 await telegram_client.send_message(
                     chat_id,
-                    "Hey Taviz! 👋 Use `/addbook <title>` or send a photo with the caption `/scanbook`.",
+                    _hello_message(),
                 )
                 return {"ok": True}
         elif command.kind == "text" and command.title:
@@ -120,16 +132,33 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
         elif command.kind == "addbook_help":
             log_incoming_command(update, command)
             book_service.start_addbook_mode(chat_id)
-            await telegram_client.send_message(chat_id, "Send me the book title and I'll add it.")
+            await telegram_client.send_message(
+                chat_id,
+                (
+                    "📝 Send me the book title and I'll take care of it for you."
+                ),
+            )
             return {"ok": True}
         elif command.kind == "scanbook_help":
             log_incoming_command(update, command)
             book_service.start_scanbook_mode(chat_id)
-            await telegram_client.send_message(chat_id, "Send me the cover photo and I'll scan it.")
+            await telegram_client.send_message(
+                chat_id,
+                (
+                    "📸 Send me the cover photo and I'll scan it for you."
+                ),
+            )
             return {"ok": True}
         else:
             log_incoming_command(update, command)
-            await telegram_client.send_message(chat_id, "Hey Taviz, I didn't understand that one 🤔 Try `/addbook <title>`.")
+            await telegram_client.send_message(
+                chat_id,
+                (
+                    f"Hi {html.escape(settings.telegram_contact_name)} ⚠️\n\n"
+                    "I didn't quite understand that command.\n"
+                    "Please try <code>/addbook &lt;title&gt;</code>."
+                ),
+            )
             return {"ok": True}
 
         logger.info("Respuesta enviada [chat_id=%s]: %s", chat_id, result.message)
@@ -138,7 +167,12 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
     except Exception as exc:
         logger.exception("Error al procesar el mensaje: %s", exc)
         await telegram_client.send_message(
-            chat_id, "Oops Taviz,\n something went wrong on my end 😕 Please try again in a moment!"
+            chat_id,
+            (
+                f"Hi {html.escape(settings.telegram_contact_name)} ⚠️\n\n"
+                "Something went wrong on my side.\n"
+                "Please try again in a moment."
+            ),
         )
         return {"ok": True}
 

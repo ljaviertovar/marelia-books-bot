@@ -12,6 +12,7 @@ from pydantic import BaseModel, ValidationError
 
 class Settings(BaseModel):
     telegram_bot_token: str
+    telegram_contact_name: str = "Taviz"
     gemini_api_key: str
     notion_api_key: str
     notion_database_id: str
@@ -67,6 +68,7 @@ def get_settings() -> Settings:
             telegram_bot_token=_require_non_empty(
                 "TELEGRAM_BOT_TOKEN", os.environ["TELEGRAM_BOT_TOKEN"]
             ),
+            telegram_contact_name=os.environ.get("TELEGRAM_CONTACT_NAME", "Taviz").strip() or "Taviz",
             gemini_api_key=_require_non_empty("GEMINI_API_KEY", os.environ["GEMINI_API_KEY"]),
             notion_api_key=_require_non_empty("NOTION_API_KEY", os.environ["NOTION_API_KEY"]),
             notion_database_id=_normalize_notion_id(

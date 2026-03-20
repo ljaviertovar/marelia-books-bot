@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from app.books.metadata import ResolvedBookMetadata
+from app.books.metadata import ResolvedBookMetadata, sanitize_series_name
 from app.gemini.parser import parse_enrichment_json
 
 logger = logging.getLogger(__name__)
@@ -33,6 +33,8 @@ class GeminiEnricher:
             k for k in ("title_es", "genre_es", "synopsis", "publisher_url", "tagline", "isbn", "pages")
             if getattr(metadata, k) is None
         ]
+        if sanitize_series_name(metadata.series) is None:
+            missing.append("series")
         if not missing:
             logger.debug("Todos los campos de enriquecimiento ya están presentes — se omite Gemini")
             return metadata
@@ -56,13 +58,16 @@ class GeminiEnricher:
             raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
             logger.debug("Respuesta cruda de Gemini (enricher):\n%s", raw_text)
             enriched = parse_enrichment_json(raw_text)
-            updated = metadata.model_copy(update={k: v for k, v in enriched.items() if v is not None})
+            updates = {k: v for k, v in enriched.items() if v is not None}
+            if "series" in updates:
+                updates["series"] = sanitize_series_name(updates["series"])
+            updated = metadata.model_copy(update=updates)
         except Exception as exc:
             logger.warning("Gemini enricher falló — el libro se creará sin enriquecimiento: %s", exc)
             return metadata
 
         logger.info(
-            "Enriquecimiento completado: title_es=%r genre_es=%r synopsis_len=%s publisher_url=%r tagline=%r isbn=%r pages=%r",
+            "Enriquecimiento completado: title_es=%r genre_es=%r synopsis_len=%s publisher_url=%r tagline=%r isbn=%r pages=%r series=%r",
             updated.title_es,
             updated.genre_es,
             len(updated.synopsis) if updated.synopsis else 0,
@@ -70,6 +75,7 @@ class GeminiEnricher:
             updated.tagline,
             updated.isbn,
             updated.pages,
+            updated.series,
         )
         return updated
 
@@ -91,6 +97,8 @@ class GeminiEnricher:
             known_parts.append(f'- Pages: {metadata.pages}')
         if metadata.categories:
             known_parts.append(f'- Categories: {", ".join(metadata.categories)}')
+        if metadata.series:
+            known_parts.append(f'- Existing series hint: "{metadata.series}"')
 
         fields_desc: list[str] = []
         if "title_es" in missing:
@@ -128,6 +136,14 @@ class GeminiEnricher:
         if "pages" in missing:
             fields_desc.append(
                 '"pages": "Número aproximado de páginas de una edición común del libro. Devuelve un entero o null si no es confiable."'
+            )
+        if "series" in missing:
+            fields_desc.append(
+                '"series": "Nombre de la serie o saga a la que pertenece el libro, si aplica. '
+                'Devuelve solo el nombre real de la serie, por ejemplo \'Foundation series\'. '
+                'No devuelvas etiquetas comerciales como \'Best Seller\', \'Bestseller\', '
+                '\'New York Times Bestseller\', premios, ediciones o slogans. '
+                'Si el libro no pertenece a una serie clara, devuelve null."'
             )
 
         fields_json = ",\n  ".join(fields_desc)

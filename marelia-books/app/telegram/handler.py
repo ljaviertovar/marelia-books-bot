@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import logging
 from collections import deque
 from dataclasses import dataclass
@@ -72,7 +71,14 @@ class TelegramClient:
     async def send_message(self, chat_id: int, text: str) -> None:
         logger.debug("Enviando mensaje a Telegram [chat_id=%s]: %r", chat_id, text[:120])
         url = f"https://api.telegram.org/bot{self._bot_token}/sendMessage"
-        response = await self._client.post(url, json={"chat_id": chat_id, "text": text})
+        response = await self._client.post(
+            url,
+            json={
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+            },
+        )
         response.raise_for_status()
         logger.debug("Mensaje enviado OK [chat_id=%s]", chat_id)
 

@@ -92,6 +92,15 @@ _CATEGORY_MAP = {
     "autoayuda": "Self-development",
 }
 
+_GENERIC_SERIES_PATTERNS = (
+    "best seller",
+    "bestseller",
+    "new york times",
+    "award-winning",
+    "award winning",
+    "premio",
+)
+
 
 class VisionBookExtraction(BaseModel):
     is_book_cover: bool
@@ -163,6 +172,21 @@ def infer_reading_type(raw: str | None) -> str:
     if "ebook" in lowered or "e-book" in lowered:
         return "eBook"
     return "Physical"
+
+
+def sanitize_series_name(value: str | None) -> str | None:
+    if not value:
+        return None
+
+    cleaned = " ".join(str(value).strip().split())
+    if not cleaned:
+        return None
+
+    lowered = cleaned.lower()
+    if any(pattern in lowered for pattern in _GENERIC_SERIES_PATTERNS):
+        return None
+
+    return cleaned
 
 
 def resolve_openlibrary_cover_url(doc: dict[str, Any]) -> str | None:
@@ -381,7 +405,7 @@ class MetadataResolver:
         logger.debug("Subjects crudos de Open Library: %s", subjects[:20])
         categories = map_categories(subjects)
         reading_type = infer_reading_type(" ".join(doc.get("format") or []))
-        series = (doc.get("series") or [None])[0]
+        series = sanitize_series_name((doc.get("series") or [None])[0])
         key = (doc.get("key") or "").strip()
         link = f"https://openlibrary.org{key}" if key else None
 

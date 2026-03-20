@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import html
 import logging
 from dataclasses import dataclass
 from typing import Protocol
 
 from app.books.deduplication import find_matching_page, normalize_book_text
-from app.books.metadata import BookCandidate, MetadataResolver, ResolvedBookMetadata, VisionBookExtraction
+from app.books.metadata import BookCandidate, MetadataResolver, ResolvedBookMetadata, VisionBookExtraction, sanitize_series_name
 from app.notion.client import NotionClient
 from app.gemini.enricher import GeminiEnricher
 from app.gemini.vision import GeminiVisionClient, GeminiVisionQuotaError, GeminiVisionResponseError
@@ -35,6 +36,7 @@ class BookService:
         metadata_resolver: MetadataResolver,
         enricher: GeminiEnricher,
         dry_run: bool,
+        contact_name: str,
     ) -> None:
         self._notion = notion_client
         self._telegram = telegram_client
@@ -42,6 +44,7 @@ class BookService:
         self._resolver = metadata_resolver
         self._enricher = enricher
         self._dry_run = dry_run
+        self._contact_name = contact_name
         self._pending: dict[int, list[BookCandidate]] = {}
         self._pending_input_mode: dict[int, str] = {}
         self._pending_search_title: dict[int, str] = {}
@@ -99,8 +102,9 @@ class BookService:
         return ProcessResult(
             ok=True,
             message=(
-                f"I found several matches for '{title}', Taviz. "
-                "Send me the author name to narrow it down, or reply `skip` and I'll show the numbered list."
+                "🔎 "
+                f"I found a few promising matches for {self._book(title)}.\n"
+                "Send me the author name and I'll narrow it down for you, or send <code>skip</code> and I'll show the numbered list."
             ),
         )
 
@@ -108,7 +112,14 @@ class BookService:
         candidates = self._pending.pop(chat_id, None)
         self.clear_input_mode(chat_id)
         if not candidates or choice < 1 or choice > len(candidates):
-            return ProcessResult(ok=False, message="Hmm, that doesn't match any of the options, Taviz. Try again with `/addbook <title>` 😉")
+            return ProcessResult(
+                ok=False,
+                message=(
+                    "⚠️ "
+                    "That number doesn't match any of the options I showed you.\n"
+                    "Please try again with <code>/addbook &lt;title&gt;</code>."
+                ),
+            )
 
         selected = candidates[choice - 1]
         requested_title = self._pending_search_title.pop(chat_id, None)
@@ -126,7 +137,14 @@ class BookService:
         if not candidates:
             self.clear_input_mode(chat_id)
             self._clear_pending_search(chat_id)
-            return ProcessResult(ok=False, message="I lost the previous search, Taviz. Try `/addbook <title>` again.")
+            return ProcessResult(
+                ok=False,
+                message=(
+                    "⚠️ "
+                    "I can't find the previous search anymore.\n"
+                    "Please try <code>/addbook &lt;title&gt;</code> again."
+                ),
+            )
 
         if normalize_book_text(author_text) in {"skip", "omitir"}:
             self.clear_input_mode(chat_id)
@@ -160,8 +178,9 @@ class BookService:
         return ProcessResult(
             ok=False,
             message=(
-                "I couldn't narrow it down with that author, Taviz. "
-                "Send another author name, reply `skip`, or choose from the full list with a number.\n\n"
+                "⚠️ "
+                "I couldn't narrow it down with that author just yet.\n"
+                "Send another author name, send <code>skip</code>, or choose from the full list with a number.\n\n"
                 + self._format_candidate_options(candidates)
             ),
         )
@@ -178,8 +197,9 @@ class BookService:
             return ProcessResult(
                 ok=False,
                 message=(
-                    "Taviz, alcancé el limite de vision por ahora 😕 "
-                    "Mientras se libera la cuota, puedes agregarlo con texto: `/addbook <titulo>`."
+                    "⚠️ "
+                    "I've reached the vision limit for now.\n"
+                    "You can still add the book with <code>/addbook &lt;title&gt;</code>."
                 ),
             )
         except GeminiVisionResponseError as exc:
@@ -187,8 +207,9 @@ class BookService:
             return ProcessResult(
                 ok=False,
                 message=(
-                    "Taviz, no pude leer bien esa portada porque Gemini devolvió una respuesta incompleta 😕 "
-                    "Prueba enviando la foto otra vez o usa `/addbook <titulo>`."
+                    "⚠️ "
+                    "I couldn't read that cover properly because Gemini returned an incomplete response.\n"
+                    "Please send the photo again, or use <code>/addbook &lt;title&gt;</code>."
                 ),
             )
 
@@ -206,12 +227,44 @@ class BookService:
         title = extraction.title or ""
         author = extraction.authors[0] if extraction.authors else None
         resolved = await self._resolver.resolve(title=title, author=author)
+        if not self._titles_match(title, resolved.title):
+            if self._should_keep_resolved_original_title(extraction, resolved):
+                logger.info(
+                    "Open Library parece haber resuelto el título original; conservando original y usando la portada como título en español [%r -> %r]",
+                    title,
+                    resolved.title,
+                )
+                resolved = resolved.model_copy(
+                    update={
+                        "title_es": title,
+                        "subtitle": extraction.subtitle or resolved.subtitle,
+                        "author": author or resolved.author,
+                        "series": sanitize_series_name(extraction.series_or_edition) or sanitize_series_name(resolved.series),
+                        "language": extraction.language or resolved.language,
+                    }
+                )
+            else:
+                logger.warning(
+                    "Open Library devolvió un título distinto al detectado por visión; usando fallback de portada [%r -> %r]",
+                    title,
+                    resolved.title,
+                )
+                resolved = resolved.model_copy(
+                    update={
+                        "title": title,
+                        "subtitle": extraction.subtitle or resolved.subtitle,
+                        "author": author or resolved.author,
+                        "series": sanitize_series_name(extraction.series_or_edition) or sanitize_series_name(resolved.series),
+                        "language": extraction.language or resolved.language,
+                    }
+                )
         if extraction.subtitle and not resolved.subtitle:
             resolved.subtitle = extraction.subtitle
+        resolved.series = sanitize_series_name(resolved.series)
         if extraction.series_or_edition and not resolved.series:
-            resolved.series = extraction.series_or_edition
-        if not resolved.cover_url:
-            resolved.cover_url = source_image_url
+            resolved.series = sanitize_series_name(extraction.series_or_edition)
+        # For scanned books, the user's photo is the most reliable cover source.
+        resolved.cover_url = source_image_url
 
         logger.info(
             "Metadatos resueltos: '%s' — %s",
@@ -224,10 +277,20 @@ class BookService:
     def _validate_vision(self, extraction: VisionBookExtraction) -> ProcessResult | None:
         if not extraction.is_book_cover:
             reason = extraction.reason_if_not_book or "that doesn't look like a book cover to me."
-            return ProcessResult(ok=False, message=f"Oops, Taviz! I couldn't add it — {reason}")
+            return ProcessResult(
+                ok=False,
+                message=f"⚠️ I couldn't add that image for you.\n{html.escape(reason)}"
+            )
 
         if extraction.confidence < 0.60:
-            return ProcessResult(ok=False, message="Taviz, the image is a bit blurry 😕 Could you send a clearer photo of the cover?")
+            return ProcessResult(
+                ok=False,
+                message=(
+                    "📸 "
+                    "The image looks a little blurry.\n"
+                    "Please send a clearer photo of the cover."
+                ),
+            )
 
         if 0.60 <= extraction.confidence < 0.85:
             title = extraction.title or "Unknown"
@@ -235,13 +298,22 @@ class BookService:
             return ProcessResult(
                 ok=False,
                 message=(
-                    f"I think this might be '{title}' by {author}, but I\'m not totally sure (confidence: {extraction.confidence:.0%}). "
-                    "Could you confirm by sending `/addbook <title>`, Taviz? 🙏"
+                    "📕 "
+                    f"I think this might be {self._book(title)} by {html.escape(author)}, "
+                    f"but I'm not completely sure ({extraction.confidence:.0%} confidence).\n"
+                    "Could you confirm it with <code>/addbook &lt;title&gt;</code>?"
                 ),
             )
 
         if not extraction.title:
-            return ProcessResult(ok=False, message="I couldn't make out the title, Taviz 😕 Try a clearer photo of the cover!")
+            return ProcessResult(
+                ok=False,
+                message=(
+                    "📸 "
+                    "I couldn't make out the title clearly.\n"
+                    "Please try a clearer photo of the cover."
+                ),
+            )
 
         return None
 
@@ -267,26 +339,64 @@ class BookService:
         if existing:
             if self._dry_run:
                 logger.info("[DRY RUN] El libro ya existe — se actualizarían campos")
-                return ProcessResult(ok=True, message=f"[DRY RUN] '{metadata.title}' is already in your Notion, Taviz! I would update the missing fields.")
+                return ProcessResult(
+                    ok=True,
+                    message=(
+                        "📚 "
+                        f"[DRY RUN] {self._book(metadata.title)} is already in your Notion.\n"
+                        "I would fill in the missing details."
+                    ),
+                )
 
             changed = await self._notion.update_book_page_missing(existing, metadata)
             logger.info("Campos faltantes actualizados: %s", changed)
             if changed:
-                return ProcessResult(ok=True, message=f"I found '{metadata.title}' already in your list, Taviz! I went ahead and filled in some missing details ✨")
-            return ProcessResult(ok=True, message=f"'{metadata.title}' is already in your reading list, Taviz! Everything looks up to date 📚")
+                return ProcessResult(
+                    ok=True,
+                    message=(
+                        "✨ "
+                        f"{self._book(metadata.title)} was already in your list.\n"
+                        "I filled in the missing details for you."
+                    ),
+                )
+            return ProcessResult(
+                ok=True,
+                message=(
+                    "📚 "
+                    f"{self._book(metadata.title)} is already in your reading list.\n"
+                    "Everything already looks up to date."
+                ),
+            )
 
         if self._dry_run:
             logger.info("[DRY RUN] Se crearía el libro en Notion")
-            return ProcessResult(ok=True, message=f"[DRY RUN] I would add '{metadata.title}' to your Notion list, Taviz!")
+            return ProcessResult(
+                ok=True,
+                message=(
+                    "📚 "
+                    f"[DRY RUN] I would add {self._book(metadata.title)} to your Notion list."
+                ),
+            )
 
         await self._telegram.send_message(
             chat_id,
-            f"I'm adding *{metadata.title_es or metadata.title}* to Notion now, Taviz. This can take a little bit ⏳",
+            (
+                "📕 "
+                f"I'm adding {self._book(metadata.title_es or metadata.title)} to Notion for you now.\n"
+                "Give me just a little moment."
+            ),
         )
         metadata = await self._enricher.enrich(metadata)
+        metadata.series = sanitize_series_name(metadata.series)
         page_id = await self._notion.create_book_page(metadata)
         logger.info("Libro creado en Notion [id=%s]", page_id)
-        return ProcessResult(ok=True, message=f"Done, Taviz! ✨\nI\'ve added *{metadata.title}* to your reading list 📚")
+        return ProcessResult(
+            ok=True,
+            message=(
+                "📚 "
+                f"I've added {self._book(metadata.title)} to your reading list for you."
+            ),
+        )
 
     @staticmethod
     def _filter_candidates_by_author(candidates: list[BookCandidate], author_text: str) -> list[BookCandidate]:
@@ -301,9 +411,9 @@ class BookService:
                 matched.append(candidate)
         return matched
 
-    @staticmethod
-    def _format_candidate_options(candidates: list[BookCandidate]) -> str:
-        lines = ["Here's what I found for you, Taviz! 📚\n"]
+    def _format_candidate_options(self, candidates: list[BookCandidate]) -> str:
+        name = html.escape(self._contact_name)
+        lines = [f"🔎 Here are the closest matches I found, {name}:\n"]
         for i, c in enumerate(candidates, 1):
             author = c.author or "unknown author"
             details: list[str] = []
@@ -314,6 +424,43 @@ class BookService:
             if c.language:
                 details.append(c.language)
             extra = f"  ({', '.join(details)})" if details else ""
-            lines.append(f"{i}. {c.title} — {author}{extra}")
-        lines.append(f"\nWhich one is it? Reply with a number between 1 and {len(candidates)} 😊")
+            lines.append(f"{i}. <b>{html.escape(c.title)}</b> — {html.escape(author)}{html.escape(extra)}")
+        lines.append(f"\n🔢 Send me a number between 1 and {len(candidates)}.")
         return "\n".join(lines)
+
+    @staticmethod
+    def _book(title: str) -> str:
+        return f"<b>{html.escape(title)}</b>"
+
+    @staticmethod
+    def _titles_match(detected_title: str | None, resolved_title: str | None) -> bool:
+        left = normalize_book_text(detected_title)
+        right = normalize_book_text(resolved_title)
+        if not left or not right:
+            return True
+        if left == right:
+            return True
+        return left in right or right in left
+
+    @staticmethod
+    def _should_keep_resolved_original_title(
+        extraction: VisionBookExtraction,
+        resolved: ResolvedBookMetadata,
+    ) -> bool:
+        detected_title = normalize_book_text(extraction.title)
+        resolved_title_es = normalize_book_text(resolved.title_es)
+        detected_language = normalize_book_text(extraction.language)
+        resolved_language = normalize_book_text(resolved.language)
+
+        if not detected_title or not resolved_title_es or detected_title != resolved_title_es:
+            return False
+
+        # If the scanned cover clearly has its own subtitle but Open Library does not,
+        # it is more likely that Open Library matched the wrong book.
+        if extraction.subtitle and not resolved.subtitle:
+            return False
+
+        if detected_language and resolved_language and detected_language != resolved_language:
+            return True
+
+        return False

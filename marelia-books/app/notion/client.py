@@ -562,6 +562,19 @@ class NotionClient:
 
     async def _populate_created_page(self, page_id: str, metadata: ResolvedBookMetadata) -> None:
         blocks = await self._wait_for_page_content(page_id)
+        if not any(_match_section_name(block) for block in blocks):
+            logger.warning(
+                "El template no apareció a tiempo; reintentando una vez más antes de continuar sin template [page_id=%s]",
+                page_id,
+            )
+            blocks = await self._wait_for_page_content(page_id, max_attempts=4, delay_seconds=1.0)
+            if not any(_match_section_name(block) for block in blocks):
+                logger.warning(
+                    "El template no estuvo disponible tras el reintento; la página se conservará sin template [page_id=%s]",
+                    page_id,
+                )
+                return
+
         all_blocks = await self._list_block_children_recursive(page_id)
         block_updates, filled_sections, placeholder_sections = plan_template_block_updates(all_blocks, metadata)
         for update in block_updates:

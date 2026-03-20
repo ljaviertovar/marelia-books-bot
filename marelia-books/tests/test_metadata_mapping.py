@@ -7,6 +7,7 @@ from app.books.metadata import (
     infer_reading_type,
     map_categories,
     resolve_openlibrary_cover_url,
+    sanitize_series_name,
 )
 
 
@@ -21,6 +22,12 @@ def test_reading_type_mapping():
     assert infer_reading_type("This is an audiobook edition") == "Audiobook"
     assert infer_reading_type("DRM-free ebook format") == "eBook"
     assert infer_reading_type("hardcover") == "Physical"
+
+
+def test_sanitize_series_name_rejects_marketing_labels():
+    assert sanitize_series_name("Best Seller") is None
+    assert sanitize_series_name("New York Times Bestseller") is None
+    assert sanitize_series_name("Foundation Series") == "Foundation Series"
 
 
 def test_cover_url_prefers_cover_edition_key_then_edition_key_then_cover_i():
