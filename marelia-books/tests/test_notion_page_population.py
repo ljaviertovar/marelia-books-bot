@@ -42,12 +42,12 @@ def _image(block_id: str, url: str = "") -> dict:
 def test_build_section_content_uses_richer_page_blocks():
     metadata = ResolvedBookMetadata(
         title="Dune",
+        subtitle="The Atreides Saga",
         author="Frank Herbert",
         series="Dune",
         title_es="Duna",
         genre_es="Ciencia ficcion",
         synopsis="Un heredero queda atrapado en el centro de una lucha por poder y especia.",
-        publisher_url="https://publisher.example/dune",
         tagline="Dune es una novela de ciencia ficcion de Frank Herbert.",
         year=1965,
         language="ingles",
@@ -58,16 +58,15 @@ def test_build_section_content_uses_richer_page_blocks():
 
     content = build_section_content(metadata)
 
-    assert set(content) == {"notes", "synopsis", "references"}
+    assert set(content) == {"notes", "synopsis"}
     assert content["notes"][0]["type"] == "callout"
-    assert content["notes"][1]["bulleted_list_item"]["rich_text"][0]["text"]["content"] == "Titulo en espanol: Duna"
+    assert content["notes"][1]["bulleted_list_item"]["rich_text"][0]["text"]["content"] == "Title: Dune"
+    assert content["notes"][2]["bulleted_list_item"]["rich_text"][0]["text"]["content"] == "Subtitle: The Atreides Saga"
+    assert content["notes"][3]["bulleted_list_item"]["rich_text"][0]["text"]["content"] == "Title (ES): Duna"
     assert content["synopsis"][0]["paragraph"]["rich_text"][0]["text"]["content"] == metadata.synopsis
-    ref_text = content["references"][0]["bulleted_list_item"]["rich_text"][0]["text"]
-    assert ref_text["content"] == metadata.publisher_url
-    assert ref_text["link"]["url"] == metadata.publisher_url
 
 
-def test_build_create_properties_infers_category_from_genre_when_missing():
+def test_build_create_properties_infers_genre_from_metadata_when_missing():
     metadata = ResolvedBookMetadata(
         title="Proyecto Hail Mary",
         categories=[],
@@ -76,7 +75,7 @@ def test_build_create_properties_infers_category_from_genre_when_missing():
 
     props = build_create_properties(metadata)
 
-    assert props["Category"]["multi_select"][0]["name"] == "Sci-Fi"
+    assert props["Genre"]["multi_select"][0]["name"] == "Sci-Fi"
 
 
 def test_plan_section_appends_uses_new_page_headings_not_template_source():
@@ -90,16 +89,14 @@ def test_plan_section_appends_uses_new_page_headings_not_template_source():
     metadata = ResolvedBookMetadata(
         title="Dune",
         synopsis="Sin spoilers.",
-        publisher_url="https://publisher.example/dune",
         tagline="A classic sci-fi novel.",
     )
 
     plans = plan_section_appends(page_blocks, metadata)
 
-    assert [plan.section for plan in plans] == ["notes", "synopsis", "references"]
+    assert [plan.section for plan in plans] == ["notes", "synopsis"]
     assert plans[0].after_block_id == "p1"
     assert plans[1].after_block_id == "p2"
-    assert plans[2].after_block_id == "h3"
     assert plans[0].children[0]["type"] == "callout"
 
 
@@ -112,7 +109,6 @@ def test_plan_section_appends_skips_missing_sections():
         title="Dune",
         tagline="A classic sci-fi novel.",
         synopsis="Sin spoilers.",
-        publisher_url="https://publisher.example/dune",
     )
 
     plans = plan_section_appends(page_blocks, metadata)
@@ -123,9 +119,10 @@ def test_plan_section_appends_skips_missing_sections():
 def test_plan_template_block_updates_fills_existing_placeholders_in_place():
     page_blocks = [
         _heading("h1", "Notes"),
-        _paragraph("n1", "Title (ES):"),
-        _paragraph("n2", "Original Title:"),
-        _paragraph("n3", "Category:"),
+        _paragraph("n1", "Title:"),
+        _paragraph("n2", "Subtitle:"),
+        _paragraph("n3", "Title (ES):"),
+        _paragraph("n4", "Genre:"),
         _heading("h2", "Synopsis (no spoilers)"),
         _paragraph("s1", ""),
         _heading("h3", "References / Links"),
@@ -133,18 +130,18 @@ def test_plan_template_block_updates_fills_existing_placeholders_in_place():
     ]
     metadata = ResolvedBookMetadata(
         title="Project Hail Mary",
+        subtitle="A Novel",
         title_es="Proyecto Hail Mary",
         genre_es="Ciencia ficcion",
         synopsis="Sinopsis breve.",
-        publisher_url="https://example.com/hail-mary",
     )
 
     updates, filled_sections, placeholder_sections = plan_template_block_updates(page_blocks, metadata)
 
     ids = {u.block_id for u in updates}
-    assert ids == {"n1", "n2", "n3", "s1", "r1"}
-    assert filled_sections == {"notes", "synopsis", "references"}
-    assert placeholder_sections == {"notes", "synopsis", "references"}
+    assert ids == {"n1", "n2", "n3", "n4", "s1"}
+    assert filled_sections == {"notes", "synopsis"}
+    assert placeholder_sections == {"notes", "synopsis"}
 
 
 def test_plan_template_block_updates_includes_tagline_and_cover_updates():
@@ -152,11 +149,10 @@ def test_plan_template_block_updates_includes_tagline_and_cover_updates():
         _callout("c1", "Notion Tip: Use this page..."),
         _image("img1"),
         _heading("h1", "Notes"),
-        _paragraph("n1", "Title (ES):"),
+        _paragraph("n1", "Title:"),
     ]
     metadata = ResolvedBookMetadata(
         title="Project Hail Mary",
-        title_es="Proyecto Hail Mary",
         tagline="Proyecto Hail Mary es una novela de ciencia ficcion escrita por Andy Weir.",
         cover_url="https://covers.example/project-hail-mary.jpg",
     )

@@ -30,7 +30,7 @@ class GeminiEnricher:
     async def enrich(self, metadata: ResolvedBookMetadata) -> ResolvedBookMetadata:
         """Call Gemini to fill in text fields missing from OpenLibrary."""
         missing = [
-            k for k in ("title_es", "genre_es", "synopsis", "publisher_url", "tagline")
+            k for k in ("title_es", "genre_es", "synopsis", "publisher_url", "tagline", "isbn", "pages")
             if getattr(metadata, k) is None
         ]
         if not missing:
@@ -62,12 +62,14 @@ class GeminiEnricher:
             return metadata
 
         logger.info(
-            "Enriquecimiento completado: title_es=%r genre_es=%r synopsis_len=%s publisher_url=%r tagline=%r",
+            "Enriquecimiento completado: title_es=%r genre_es=%r synopsis_len=%s publisher_url=%r tagline=%r isbn=%r pages=%r",
             updated.title_es,
             updated.genre_es,
             len(updated.synopsis) if updated.synopsis else 0,
             updated.publisher_url,
             updated.tagline,
+            updated.isbn,
+            updated.pages,
         )
         return updated
 
@@ -85,6 +87,8 @@ class GeminiEnricher:
             known_parts.append(f'- Original language: "{metadata.language}"')
         if metadata.isbn:
             known_parts.append(f'- ISBN: {metadata.isbn}')
+        if metadata.pages:
+            known_parts.append(f'- Pages: {metadata.pages}')
         if metadata.categories:
             known_parts.append(f'- Categories: {", ".join(metadata.categories)}')
 
@@ -116,6 +120,14 @@ class GeminiEnricher:
                 'Debe mencionar el título, el género/tipo de obra y el autor o editor. '
                 'Ejemplo: \'Dune es una novela de ciencia ficción escrita por Frank Herbert.\' '
                 'No uses comillas en el texto de salida."'
+            )
+        if "isbn" in missing:
+            fields_desc.append(
+                '"isbn": "ISBN principal del libro o de una edición ampliamente disponible. Si no hay uno confiable, devuelve null."'
+            )
+        if "pages" in missing:
+            fields_desc.append(
+                '"pages": "Número aproximado de páginas de una edición común del libro. Devuelve un entero o null si no es confiable."'
             )
 
         fields_json = ",\n  ".join(fields_desc)

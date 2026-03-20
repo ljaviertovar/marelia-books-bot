@@ -58,6 +58,14 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.on_event("startup")
+async def startup() -> None:
+    try:
+        await telegram_client.set_my_commands()
+    except Exception as exc:
+        logger.warning("No se pudieron registrar los slash commands de Telegram: %s", exc)
+
+
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request) -> dict[str, bool]:
     payload = await request.json()
@@ -82,15 +90,25 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
     try:
         if not command:
             text = (update.message.text or "").strip()
-            if text in ("1", "2", "3") and book_service.has_pending(chat_id):
+            if text.isdigit() and book_service.has_pending(chat_id):
                 logger.info("Selection received: %s [chat_id=%s]", text, chat_id)
                 result = await book_service.process_selection(chat_id, int(text))
+            elif text and book_service.is_waiting_for_author(chat_id):
+                logger.info("Author received for refinement [chat_id=%s]", chat_id)
+                result = await book_service.process_author_refinement(chat_id, text)
+            elif text and book_service.is_waiting_for_title(chat_id):
+                logger.info("Title received after /addbook [chat_id=%s]", chat_id)
+                result = await book_service.process_text_command(text, chat_id)
+            elif update.message.photo and book_service.is_waiting_for_photo(chat_id):
+                logger.info("Photo received after /scanbook [chat_id=%s]", chat_id)
+                photo = sorted(update.message.photo, key=lambda x: x.width * x.height)[-1]
+                result = await book_service.process_image_command(photo.file_id, chat_id)
             else:
                 log_incoming_command(update, command)
                 logger.info("Comando no reconocido [chat_id=%s]", chat_id)
                 await telegram_client.send_message(
                     chat_id,
-                    "Hey Taviz! 👋 I didn't quite get that. Send 'Add Book <title>' or a photo of the cover with the caption 'Add Book'.",
+                    "Hey Taviz! 👋 Use `/addbook <title>` or send a photo with the caption `/scanbook`.",
                 )
                 return {"ok": True}
         elif command.kind == "text" and command.title:
@@ -98,10 +116,20 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
             result = await book_service.process_text_command(command.title, chat_id)
         elif command.kind == "image" and command.file_id:
             log_incoming_command(update, command)
-            result = await book_service.process_image_command(command.file_id)
+            result = await book_service.process_image_command(command.file_id, chat_id)
+        elif command.kind == "addbook_help":
+            log_incoming_command(update, command)
+            book_service.start_addbook_mode(chat_id)
+            await telegram_client.send_message(chat_id, "Send me the book title and I'll add it.")
+            return {"ok": True}
+        elif command.kind == "scanbook_help":
+            log_incoming_command(update, command)
+            book_service.start_scanbook_mode(chat_id)
+            await telegram_client.send_message(chat_id, "Send me the cover photo and I'll scan it.")
+            return {"ok": True}
         else:
             log_incoming_command(update, command)
-            await telegram_client.send_message(chat_id, "Hey Taviz, I didn't understand that one 🤔 Try 'Add Book <title>'.")
+            await telegram_client.send_message(chat_id, "Hey Taviz, I didn't understand that one 🤔 Try `/addbook <title>`.")
             return {"ok": True}
 
         logger.info("Respuesta enviada [chat_id=%s]: %s", chat_id, result.message)

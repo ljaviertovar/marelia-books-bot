@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field as dc_field
 from typing import Any, Iterable
+import unicodedata
 
 import httpx
 from pydantic import BaseModel, Field
+from urllib.parse import quote_plus
 
 logger = __import__("logging").getLogger(__name__)
 
@@ -105,6 +107,7 @@ class VisionBookExtraction(BaseModel):
 
 class ResolvedBookMetadata(BaseModel):
     title: str
+    subtitle: str | None = None
     author: str | None = None
     series: str | None = None
     cover_url: str | None = None
@@ -181,6 +184,13 @@ def resolve_openlibrary_cover_url(doc: dict[str, Any]) -> str | None:
     return None
 
 
+def build_amazon_search_url(title: str | None, author: str | None = None) -> str | None:
+    query_parts = [part.strip() for part in (title, author) if part and part.strip()]
+    if not query_parts:
+        return None
+    return f"https://www.amazon.com/s?k={quote_plus(' '.join(query_parts))}"
+
+
 def _extract_work_key(doc: dict[str, Any]) -> str | None:
     key = str(doc.get("key") or "").strip()
     if key.startswith("/works/"):
@@ -219,6 +229,34 @@ def _lang_name_from_edition_payload(payload: dict[str, Any]) -> str | None:
     return None
 
 
+def _normalize_search_text(value: str | None) -> str:
+    text = unicodedata.normalize("NFKD", (value or "").strip().lower())
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.replace(",", " ")
+    return " ".join(text.split())
+
+
+def _sort_search_docs(docs: list[dict[str, Any]], title: str, author: str | None = None) -> list[dict[str, Any]]:
+    target_title = _normalize_search_text(title)
+    target_author = _normalize_search_text(author)
+
+    def sort_key(doc: dict[str, Any]) -> tuple[int, int, int, int, int, str]:
+        doc_title = _normalize_search_text(doc.get("title"))
+        doc_author = _normalize_search_text(((doc.get("author_name") or [None])[0]))
+
+        exact_title = int(doc_title == target_title)
+        prefix_title = int(bool(target_title) and doc_title.startswith(target_title))
+        exact_author = int(bool(target_author) and doc_author == target_author)
+        partial_author = int(bool(target_author) and target_author in doc_author)
+        has_cover = int(bool(doc.get("cover_edition_key") or doc.get("edition_key") or doc.get("cover_i")))
+
+        if target_author:
+            return (-exact_author, -partial_author, -exact_title, -prefix_title, -has_cover, doc_title)
+        return (-exact_title, -prefix_title, -exact_author, -partial_author, -has_cover, doc_title)
+
+    return sorted(docs, key=sort_key)
+
+
 class MetadataResolver:
     def __init__(self, timeout_seconds: float = 10.0) -> None:
         self._client = httpx.AsyncClient(timeout=timeout_seconds)
@@ -227,10 +265,10 @@ class MetadataResolver:
         await self._client.aclose()
 
     async def search_candidates(self, title: str, limit: int = 3) -> list[BookCandidate]:
-        params = {"title": title, "limit": limit}
+        params = {"q": title, "limit": max(limit * 5, 10)}
         response = await self._client.get("https://openlibrary.org/search.json", params=params)
         response.raise_for_status()
-        docs = response.json().get("docs", [])[:limit]
+        docs = _sort_search_docs(response.json().get("docs", []), title)[:limit]
         candidates = []
         for doc in docs:
             t = (doc.get("title") or title).strip()
@@ -247,18 +285,20 @@ class MetadataResolver:
         return await self._enrich_with_openlibrary_details(metadata, candidate.raw_doc)
 
     async def resolve(self, *, title: str, author: str | None = None) -> ResolvedBookMetadata:
-        params = {"title": title, "limit": 5}
+        params = {"q": title, "limit": 25}
         if author:
             params["author"] = author
 
         response = await self._client.get("https://openlibrary.org/search.json", params=params)
         response.raise_for_status()
-        docs = response.json().get("docs", [])
+        docs = _sort_search_docs(response.json().get("docs", []), title, author)
 
         if not docs:
             return ResolvedBookMetadata(title=title, author=author)
 
         metadata = self._doc_to_metadata(docs[0], title, author)
+        if author and title and _normalize_search_text(metadata.title) != _normalize_search_text(title):
+            metadata.title_es = title
         return await self._enrich_with_openlibrary_details(metadata, docs[0])
 
     async def _enrich_with_openlibrary_details(self, metadata: ResolvedBookMetadata, doc: dict[str, Any]) -> ResolvedBookMetadata:

@@ -8,7 +8,7 @@ def test_update_only_missing_fields_logic():
         "Author": {"rich_text": [{"plain_text": "Existing Author"}]},
         "Book Series": {"rich_text": []},
         "Cover": {"url": None},
-        "Category": {"multi_select": []},
+        "Genre": {"multi_select": []},
         "Reading Type": {"select": {"name": None}},
         "Type": {"select": {"name": "Book"}},
         "Link": {"url": None},
@@ -33,7 +33,7 @@ def test_update_only_missing_fields_logic():
     assert "Type" not in updates
     assert updates["Book Series"]["rich_text"][0]["text"]["content"] == "Series A"
     assert updates["Cover"]["files"][0]["external"]["url"] == "https://example.com/cover.jpg"
-    assert updates["Category"]["multi_select"][0]["name"] == "Fantasy"
+    assert updates["Genre"]["multi_select"][0]["name"] == "Fantasy"
     assert updates["Reading Type"]["select"]["name"] == "Physical"
     assert updates["Link"]["url"] == "https://example.com/book"
     assert "Status" not in updates

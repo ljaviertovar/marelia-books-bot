@@ -25,12 +25,13 @@ _READONLY_FIELDS = frozenset({
 # Maps a label prefix (as it appears at the start of a rich_text block) to the metadata field value.
 # Labels must match exactly what the Notion template contains (use DEBUG logs to verify).
 _FIELD_INJECTORS: list[tuple[str, Callable[[ResolvedBookMetadata], str | None]]] = [
+    ("Title:", lambda m: m.title),
+    ("Subtitle:", lambda m: m.subtitle),
     ("Title (ES):", lambda m: m.title_es),
-    ("Original Title:", lambda m: m.title),
     ("Serie:", lambda m: m.series),
-    ("Category:", lambda m: m.genre_es),
+    ("Genre:", lambda m: m.genre_es),
     (
-        "Original publication",
+        "Original publication (language):",
         lambda m: (
             f"{m.year} ({m.language})" if m.year and m.language
             else str(m.year) if m.year
@@ -54,12 +55,11 @@ def build_blocks_from_template(
     3. Populates known label placeholders with metadata values.
     """
     _in_synopsis_section = [False]
-    _in_references_section = [False]
     _tagline_injected = [False]  # replace the first callout in the template
     result: list[dict[str, Any]] = []
 
     for block in template_blocks:
-        built = _build_block(block, metadata, _in_synopsis_section, _in_references_section, _tagline_injected)
+        built = _build_block(block, metadata, _in_synopsis_section, _tagline_injected)
         if built is not None:
             result.append(built)
     return result
@@ -69,7 +69,6 @@ def _build_block(
     block: dict[str, Any],
     metadata: ResolvedBookMetadata,
     in_synopsis_section: list[bool],
-    in_references_section: list[bool],
     tagline_injected: list[bool] | None = None,
 ) -> dict[str, Any] | None:
     block_type: str = block.get("type", "")
@@ -85,7 +84,6 @@ def _build_block(
     if block_type in ("heading_1", "heading_2", "heading_3"):
         heading_text = _extract_plain_text(type_data.get("rich_text", [])).lower()
         in_synopsis_section[0] = "synopsis" in heading_text or "sinopsis" in heading_text
-        in_references_section[0] = "reference" in heading_text or "link" in heading_text or "enlace" in heading_text
 
     # Replace the first callout block with the tagline
     if block_type == "callout" and metadata.tagline and tagline_injected is not None and not tagline_injected[0]:
@@ -98,9 +96,7 @@ def _build_block(
     # Populate rich_text labels for list items / paragraphs
     if block_type in ("bulleted_list_item", "numbered_list_item", "paragraph"):
         rich_text = type_data.get("rich_text", [])
-        type_data["rich_text"] = _populate_rich_text(
-            rich_text, metadata, in_synopsis_section, in_references_section, block_type
-        )
+        type_data["rich_text"] = _populate_rich_text(rich_text, metadata, in_synopsis_section, block_type)
 
     # Populate image blocks with cover_url; drop the block if no URL is available
     if block_type == "image":
@@ -118,10 +114,9 @@ def _build_block(
     fetched_children: list[dict[str, Any]] = block.get("_fetched_children", [])
     if fetched_children:
         child_syn = [in_synopsis_section[0]]
-        child_ref = [in_references_section[0]]
         built_children = [
             c for raw_child in fetched_children
-            if (c := _build_block(raw_child, metadata, child_syn, child_ref, tagline_injected)) is not None
+            if (c := _build_block(raw_child, metadata, child_syn, tagline_injected)) is not None
         ]
         if built_children:
             type_data["children"] = built_children
@@ -138,7 +133,6 @@ def _populate_rich_text(
     rich_text: list[dict[str, Any]],
     metadata: ResolvedBookMetadata,
     in_synopsis_section: list[bool],
-    in_references_section: list[bool],
     block_type: str = "bulleted_list_item",
 ) -> list[dict[str, Any]]:
     plain = _extract_plain_text(rich_text)
@@ -146,12 +140,6 @@ def _populate_rich_text(
     # Synopsis block: empty list item/paragraph inside the synopsis section
     if in_synopsis_section[0] and not plain.strip() and metadata.synopsis:
         return [{"type": "text", "text": {"content": metadata.synopsis}}]
-
-    # References block: only fill empty LIST items (not paragraphs) → publisher_url
-    is_list_item = block_type in ("bulleted_list_item", "numbered_list_item")
-    if in_references_section[0] and is_list_item and not plain.strip() and metadata.publisher_url:
-        logger.debug("Template populate references: publisher_url=%r", metadata.publisher_url)
-        return [{"type": "text", "text": {"content": metadata.publisher_url}}]
 
     # Check each known label prefix
     for label, getter in _FIELD_INJECTORS:

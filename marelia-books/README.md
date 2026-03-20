@@ -4,8 +4,8 @@ Single-purpose Telegram bot service that adds books to one fixed Notion Reading 
 
 ## Scope
 - Accepts only:
-  - Text: `Add Book <title>`
-  - Photo with caption: `Add Book`
+  - Text: `/addbook <title>`
+  - Photo with caption: `/scanbook`
 - Works with one fixed Notion database and one fixed Notion template (from env vars).
 - Ignores chats not included in `ALLOWED_CHAT_IDS`.
 
@@ -74,14 +74,14 @@ When `DRY_RUN=true`, the bot performs the full flow (parse, vision, metadata, du
 
 ## Behavior examples
 1. Text command:
-   - Input: `Add Book Dune`
+   - Input: `/addbook Dune`
    - Behavior: resolve metadata, check duplicate in fixed Notion DB, create with fixed template if missing, or fill allowed missing fields if existing.
 
 2. Image command:
-   - Input: photo + caption `Add Book`
+   - Input: photo + caption `/scanbook`
    - Behavior: run Gemini vision extraction JSON schema, confidence gate:
      - `>= 0.85`: continue automatically
-     - `0.60 - 0.84`: ask user to confirm via `Add Book <title>`
+     - `0.60 - 0.84`: ask user to confirm via `/addbook <title>`
      - `< 0.60`: ask for clearer image
 
 3. Existing book match:

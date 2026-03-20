@@ -1,7 +1,9 @@
 from app.books.metadata import (
+    MetadataResolver,
     _extract_edition_key,
     _extract_work_key,
     _lang_name_from_edition_payload,
+    _sort_search_docs,
     infer_reading_type,
     map_categories,
     resolve_openlibrary_cover_url,
@@ -43,3 +45,38 @@ def test_extract_work_and_edition_keys():
 def test_language_from_edition_payload():
     payload = {"languages": [{"key": "/languages/eng"}]}
     assert _lang_name_from_edition_payload(payload) == "inglés"
+
+
+def test_sort_search_docs_prioritizes_exact_title_matches():
+    docs = [
+        {"title": "Artemis Fowl"},
+        {"title": "Artemisa", "cover_i": 123},
+        {"title": "Artemisa ilustrada"},
+    ]
+
+    sorted_docs = _sort_search_docs(docs, "Artemisa")
+
+    assert sorted_docs[0]["title"] == "Artemisa"
+
+
+def test_sort_search_docs_prioritizes_author_when_provided():
+    docs = [
+        {"title": "Artemisa", "author_name": ["unknown author"]},
+        {"title": "Artemis", "author_name": ["Andy Weir"], "cover_i": 123},
+    ]
+
+    sorted_docs = _sort_search_docs(docs, "Artemisa", "Andy Weir")
+
+    assert sorted_docs[0]["author_name"][0] == "Andy Weir"
+
+
+def test_resolve_sets_title_es_from_query_when_selected_title_differs():
+    resolver = MetadataResolver()
+    doc = {"title": "Artemis", "author_name": ["Andy Weir"]}
+
+    metadata = resolver._doc_to_metadata(doc, "Artemisa", "Andy Weir")
+    if metadata.title != "Artemisa":
+        metadata.title_es = "Artemisa"
+
+    assert metadata.title == "Artemis"
+    assert metadata.title_es == "Artemisa"

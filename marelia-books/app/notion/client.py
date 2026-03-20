@@ -183,7 +183,7 @@ def _is_empty_property(prop_name: str, prop_value: dict[str, Any] | None) -> boo
         return not (prop_value.get("rich_text") or [])
     if prop_name == "Cover":
         return not (prop_value.get("files") or [])
-    if prop_name == "Category":
+    if prop_name == "Genre":
         return not (prop_value.get("multi_select") or [])
     if prop_name in {"Reading Type", "Book Type"}:
         return not (prop_value.get("select") or {}).get("name")
@@ -209,7 +209,7 @@ def build_create_properties(metadata: ResolvedBookMetadata) -> dict[str, Any]:
     if metadata.cover_url:
         properties["Cover"] = _file_prop(metadata.cover_url)
     if categories:
-        properties["Category"] = _multi_select_prop(categories)
+        properties["Genre"] = _multi_select_prop(categories)
     if metadata.link:
         properties["Link"] = _url_prop(metadata.link)
 
@@ -227,8 +227,8 @@ def build_missing_update_properties(raw_properties: dict[str, Any], metadata: Re
         updates["Book Series"] = _rich_text_prop(metadata.series)
     if metadata.cover_url and _is_empty_property("Cover", existing.get("Cover")):
         updates["Cover"] = _file_prop(metadata.cover_url)
-    if categories and _is_empty_property("Category", existing.get("Category")):
-        updates["Category"] = _multi_select_prop(categories)
+    if categories and _is_empty_property("Genre", existing.get("Genre")):
+        updates["Genre"] = _multi_select_prop(categories)
     if metadata.reading_type and _is_empty_property("Reading Type", existing.get("Reading Type")):
         updates["Reading Type"] = _select_prop(metadata.reading_type)
     if metadata.type and _is_empty_property("Book Type", existing.get("Book Type")):
@@ -246,21 +246,25 @@ def _build_note_blocks(metadata: ResolvedBookMetadata) -> list[dict[str, Any]]:
         blocks.append(_callout_block(metadata.tagline))
 
     detail_lines: list[str] = []
+    if metadata.title:
+        detail_lines.append(f"Title: {metadata.title}")
+    if metadata.subtitle:
+        detail_lines.append(f"Subtitle: {metadata.subtitle}")
     if metadata.title_es:
-        detail_lines.append(f"Titulo en espanol: {metadata.title_es}")
+        detail_lines.append(f"Title (ES): {metadata.title_es}")
     category_display = _metadata_category_display(metadata)
     if category_display:
-        detail_lines.append(f"Category: {category_display}")
+        detail_lines.append(f"Genre: {category_display}")
     if metadata.genre_es:
         detail_lines.append(f"Genero: {metadata.genre_es}")
     if metadata.series:
         detail_lines.append(f"Serie: {metadata.series}")
     if metadata.year and metadata.language:
-        detail_lines.append(f"Publicacion original: {metadata.year} ({metadata.language})")
+        detail_lines.append(f"Original publication (language): {metadata.year} ({metadata.language})")
     elif metadata.year:
-        detail_lines.append(f"Publicacion original: {metadata.year}")
+        detail_lines.append(f"Original publication (language): {metadata.year}")
     elif metadata.language:
-        detail_lines.append(f"Idioma original: {metadata.language}")
+        detail_lines.append(f"Original publication (language): {metadata.language}")
     if metadata.publisher:
         detail_lines.append(f"Editorial: {metadata.publisher}")
     if metadata.isbn:
@@ -281,9 +285,6 @@ def build_section_content(metadata: ResolvedBookMetadata) -> dict[str, list[dict
 
     if metadata.synopsis:
         content["synopsis"] = [_paragraph_block(metadata.synopsis)]
-
-    if metadata.publisher_url:
-        content["references"] = [_bulleted_item_block(metadata.publisher_url, url=metadata.publisher_url)]
 
     return content
 
@@ -345,15 +346,17 @@ def _notes_label_values(metadata: ResolvedBookMetadata) -> dict[str, str]:
         else metadata.language
     )
     values: dict[str, str] = {}
+    if metadata.title:
+        values["Title:"] = metadata.title
+    if metadata.subtitle:
+        values["Subtitle:"] = metadata.subtitle
     if metadata.title_es:
         values["Title (ES):"] = metadata.title_es
-    if metadata.title:
-        values["Original Title:"] = metadata.title
     category = _metadata_category_display(metadata)
     if category:
-        values["Category:"] = category
+        values["Genre:"] = category
     if publication:
-        values["Original publication"] = publication
+        values["Original publication (language):"] = publication
     if metadata.publisher:
         values["Editorial:"] = metadata.publisher
     if metadata.isbn:
@@ -372,7 +375,6 @@ def plan_template_block_updates(page_blocks: list[dict[str, Any]], metadata: Res
     used_note_labels: set[str] = set()
     current_section: str | None = None
     synopsis_placeholder: dict[str, Any] | None = None
-    reference_placeholder: dict[str, Any] | None = None
     tagline_placeholder: dict[str, Any] | None = None
     cover_placeholder: dict[str, Any] | None = None
     note_placeholders_detected = False
@@ -412,10 +414,6 @@ def plan_template_block_updates(page_blocks: list[dict[str, Any]], metadata: Res
         if current_section == "synopsis" and synopsis_placeholder is None:
             if block_type in {"bulleted_list_item", "numbered_list_item", "paragraph"} and not plain:
                 synopsis_placeholder = block
-        if current_section == "references" and reference_placeholder is None:
-            if block_type in {"bulleted_list_item", "numbered_list_item", "paragraph"} and not plain:
-                reference_placeholder = block
-
     if metadata.synopsis and synopsis_placeholder:
         payload = _replace_block_text_payload(synopsis_placeholder, metadata.synopsis)
         block_id = synopsis_placeholder.get("id")
@@ -424,15 +422,6 @@ def plan_template_block_updates(page_blocks: list[dict[str, Any]], metadata: Res
             filled_sections.add("synopsis")
     if synopsis_placeholder:
         placeholder_sections.add("synopsis")
-
-    if metadata.publisher_url and reference_placeholder:
-        payload = _replace_block_text_payload(reference_placeholder, metadata.publisher_url, url=metadata.publisher_url)
-        block_id = reference_placeholder.get("id")
-        if payload and block_id:
-            updates.append(BlockUpdatePlan(block_id=block_id, payload=payload))
-            filled_sections.add("references")
-    if reference_placeholder:
-        placeholder_sections.add("references")
 
     if metadata.tagline and tagline_placeholder:
         payload = _replace_block_text_payload(tagline_placeholder, metadata.tagline)

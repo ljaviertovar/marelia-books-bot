@@ -7,15 +7,19 @@ from typing import Any
 import httpx
 
 from app.books.metadata import VisionBookExtraction
-from app.gemini.parser import parse_vision_json
+from app.gemini.parser import GeminiJSONParseError, parse_vision_json
 
 logger = logging.getLogger(__name__)
 
-_GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+_GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent"
 
 
 class GeminiVisionQuotaError(RuntimeError):
     """Raised when Gemini Vision quota is exhausted (HTTP 429)."""
+
+
+class GeminiVisionResponseError(RuntimeError):
+    """Raised when Gemini Vision returns an unusable response."""
 
 
 class GeminiVisionClient:
@@ -31,8 +35,53 @@ class GeminiVisionClient:
 
     async def extract_book_data(self, image_bytes: bytes, mime_type: str) -> VisionBookExtraction:
         encoded = base64.b64encode(image_bytes).decode("ascii")
+        logger.info("Enviando imagen a Gemini (%d bytes)", len(image_bytes))
+        extraction: VisionBookExtraction | None = None
+        last_error: Exception | None = None
 
-        payload = {
+        for max_output_tokens in (1200, 2000):
+            payload = self._build_payload(encoded, mime_type, max_output_tokens=max_output_tokens)
+            url = f"{_GEMINI_URL}?key={self._api_key}"
+            response = await self._request_with_retry(url, payload)
+            data = response.json()
+            output_text = self._extract_text_output(data)
+            finish_reason = self._extract_finish_reason(data)
+            logger.debug("Respuesta cruda de Gemini: %r", output_text[:300])
+
+            try:
+                extraction = parse_vision_json(output_text)
+                break
+            except GeminiJSONParseError as exc:
+                last_error = exc
+                logger.warning(
+                    "Gemini devolvió JSON inválido o incompleto (finish_reason=%s, max_tokens=%s): %s",
+                    finish_reason or "unknown",
+                    max_output_tokens,
+                    exc,
+                )
+                if max_output_tokens == 2000:
+                    break
+
+        if extraction is None:
+            raise GeminiVisionResponseError(f"Gemini returned an unusable vision response: {last_error}")
+
+        logger.info("━" * 60)
+        logger.info("📖 GEMINI EXTRACTION RESULT")
+        logger.info("  is_book_cover : %s", extraction.is_book_cover)
+        logger.info("  title         : %r", extraction.title)
+        logger.info("  subtitle      : %r", extraction.subtitle)
+        logger.info("  authors       : %s", extraction.authors)
+        logger.info("  series        : %r", extraction.series_or_edition)
+        logger.info("  language      : %r", extraction.language)
+        logger.info("  confidence    : %.0f%%", extraction.confidence * 100)
+        if not extraction.is_book_cover:
+            logger.info("  reason        : %r", extraction.reason_if_not_book)
+        logger.info("━" * 60)
+        return extraction
+
+    @staticmethod
+    def _build_payload(encoded_image: str, mime_type: str, *, max_output_tokens: int) -> dict[str, Any]:
+        return {
             "contents": [
                 {
                     "parts": [
@@ -40,6 +89,12 @@ class GeminiVisionClient:
                             "text": (
                                 "You are a strict JSON extractor for book covers. "
                                 "Return JSON only, no markdown, no explanation. "
+                                "Keep every field concise. "
+                                "Use at most 2 authors. "
+                                "Keep subtitle under 120 characters. "
+                                "Keep series_or_edition under 80 characters. "
+                                "Keep reason_if_not_book under 120 characters. "
+                                "Keep raw_visible_text under 120 characters. "
                                 "Schema: "
                                 "{\"is_book_cover\": true, "
                                 "\"title\": \"string | null\", "
@@ -55,7 +110,7 @@ class GeminiVisionClient:
                         {
                             "inline_data": {
                                 "mime_type": mime_type,
-                                "data": encoded,
+                                "data": encoded_image,
                             },
                         },
                     ]
@@ -63,30 +118,11 @@ class GeminiVisionClient:
             ],
             "generationConfig": {
                 "temperature": 0,
-                "maxOutputTokens": 500,
+                "responseMimeType": "application/json",
+                "maxOutputTokens": max_output_tokens,
+                "media_resolution": "MEDIA_RESOLUTION_HIGH",
             },
         }
-
-        url = f"{_GEMINI_URL}?key={self._api_key}"
-        logger.info("Enviando imagen a Gemini (%d bytes)", len(image_bytes))
-        response = await self._request_with_retry(url, payload)
-        data = response.json()
-        output_text = self._extract_text_output(data)
-        logger.debug("Respuesta cruda de Gemini: %r", output_text[:300])
-        extraction = parse_vision_json(output_text)
-        logger.info("━" * 60)
-        logger.info("📖 GEMINI EXTRACTION RESULT")
-        logger.info("  is_book_cover : %s", extraction.is_book_cover)
-        logger.info("  title         : %r", extraction.title)
-        logger.info("  subtitle      : %r", extraction.subtitle)
-        logger.info("  authors       : %s", extraction.authors)
-        logger.info("  series        : %r", extraction.series_or_edition)
-        logger.info("  language      : %r", extraction.language)
-        logger.info("  confidence    : %.0f%%", extraction.confidence * 100)
-        if not extraction.is_book_cover:
-            logger.info("  reason        : %r", extraction.reason_if_not_book)
-        logger.info("━" * 60)
-        return extraction
 
     async def _request_with_retry(self, url: str, payload: dict[str, Any], max_attempts: int = 4) -> httpx.Response:
         delay = 1.0
@@ -138,5 +174,12 @@ class GeminiVisionClient:
             content = candidates[0].get("content", {})
             parts = content.get("parts", [])
             if parts:
-                return parts[0].get("text", "")
+                return "".join(str(part.get("text", "")) for part in parts if part.get("text"))
         return ""
+
+    @staticmethod
+    def _extract_finish_reason(response: dict[str, Any]) -> str | None:
+        candidates = response.get("candidates", [])
+        if candidates:
+            return candidates[0].get("finishReason")
+        return None

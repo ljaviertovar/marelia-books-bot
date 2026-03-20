@@ -36,7 +36,7 @@ class TelegramUpdate(BaseModel):
 
 @dataclass
 class ParsedCommand:
-    kind: str  # text | image
+    kind: str  # text | image | addbook_help | scanbook_help
     title: str | None = None
     file_id: str | None = None
 
@@ -76,7 +76,22 @@ class TelegramClient:
         response.raise_for_status()
         logger.debug("Mensaje enviado OK [chat_id=%s]", chat_id)
 
-    async def download_file(self, file_id: str) -> tuple[bytes, str]:
+    async def set_my_commands(self) -> None:
+        logger.debug("Registrando slash commands de Telegram")
+        url = f"https://api.telegram.org/bot{self._bot_token}/setMyCommands"
+        response = await self._client.post(
+            url,
+            json={
+                "commands": [
+                    {"command": "addbook", "description": "Add Book to Reading List"},
+                    {"command": "scanbook", "description": "Scan a book to add"},
+                ]
+            },
+        )
+        response.raise_for_status()
+        logger.debug("Slash commands registrados OK")
+
+    async def download_file(self, file_id: str) -> tuple[bytes, str, str]:
         logger.debug("Descargando imagen de Telegram [file_id=%s]", file_id)
         file_info = await self._client.get(
             f"https://api.telegram.org/bot{self._bot_token}/getFile",
@@ -86,7 +101,8 @@ class TelegramClient:
         file_path = file_info.json()["result"]["file_path"]
         logger.debug("Ruta del archivo en Telegram: %s", file_path)
 
-        content = await self._client.get(f"https://api.telegram.org/file/bot{self._bot_token}/{file_path}")
+        file_url = f"https://api.telegram.org/file/bot{self._bot_token}/{file_path}"
+        content = await self._client.get(file_url)
         content.raise_for_status()
 
         mime_type = "image/jpeg"
@@ -94,7 +110,7 @@ class TelegramClient:
             mime_type = "image/png"
 
         logger.debug("Imagen descargada (%d bytes, %s)", len(content.content), mime_type)
-        return content.content, mime_type
+        return content.content, mime_type, file_url
 
 
 
@@ -109,13 +125,21 @@ def parse_supported_command(message: TelegramMessage) -> ParsedCommand | None:
         bool(message.photo),
     )
 
-    if text.startswith("Add Book ") and len(text) > len("Add Book "):
-        title = text[len("Add Book ") :].strip()
+    if text.startswith("/addbook ") and len(text) > len("/addbook "):
+        title = text[len("/addbook ") :].strip()
         if title:
             logger.debug("Comando detectado: texto — título=%r", title)
             return ParsedCommand(kind="text", title=title)
 
-    if message.photo and caption == "Add Book":
+    if text == "/addbook":
+        logger.debug("Comando detectado: addbook_help")
+        return ParsedCommand(kind="addbook_help")
+
+    if text == "/scanbook":
+        logger.debug("Comando detectado: scanbook_help")
+        return ParsedCommand(kind="scanbook_help")
+
+    if message.photo and caption == "/scanbook":
         photo = sorted(message.photo, key=lambda x: x.width * x.height)[-1]
         logger.debug("Comando detectado: imagen — file_id=%s", photo.file_id)
         return ParsedCommand(kind="image", file_id=photo.file_id)
