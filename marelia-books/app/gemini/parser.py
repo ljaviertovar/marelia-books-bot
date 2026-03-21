@@ -41,12 +41,12 @@ def parse_vision_json(raw_text: str) -> VisionBookExtraction:
 def parse_enrichment_json(raw_text: str) -> dict[str, str | int | None]:
     """Parse Gemini enrichment JSON response.
 
-    Returns a dict with keys: title_es, genre_es, synopsis, publisher_url, tagline, isbn, pages, series, order_to_read.
+    Returns a dict with keys: title_es, genre_es, synopsis, tagline, isbn, pages, series, order_to_read.
     Missing or null values are returned as None.
     """
     parsed = _extract_json_object(raw_text)
     result: dict[str, str | int | None] = {}
-    for key in ("title_es", "genre_es", "synopsis", "publisher_url", "tagline", "series"):
+    for key in ("title_es", "genre_es", "synopsis", "tagline", "series"):
         val = parsed.get(key)
         result[key] = str(val).strip() if val else None
     isbn = parsed.get("isbn")

@@ -30,7 +30,7 @@ class GeminiEnricher:
     async def enrich(self, metadata: ResolvedBookMetadata) -> ResolvedBookMetadata:
         """Call Gemini to fill in text fields missing from OpenLibrary."""
         missing = [
-            k for k in ("title_es", "genre_es", "synopsis", "publisher_url", "tagline", "isbn", "pages", "order_to_read")
+            k for k in ("title_es", "genre_es", "synopsis", "tagline", "isbn", "pages", "order_to_read")
             if getattr(metadata, k) is None
         ]
         if sanitize_series_name(metadata.series) is None:
@@ -68,11 +68,10 @@ class GeminiEnricher:
             return metadata
 
         logger.info(
-            "Enriquecimiento completado: title_es=%r genre_es=%r synopsis_len=%s publisher_url=%r tagline=%r isbn=%r pages=%r series=%r order_to_read=%r",
+            "Enriquecimiento completado: title_es=%r genre_es=%r synopsis_len=%s tagline=%r isbn=%r pages=%r series=%r order_to_read=%r",
             updated.title_es,
             updated.genre_es,
             len(updated.synopsis) if updated.synopsis else 0,
-            updated.publisher_url,
             updated.tagline,
             updated.isbn,
             updated.pages,
@@ -138,11 +137,6 @@ class GeminiEnricher:
                 '"synopsis": "Sinopsis del libro en español, sin spoilers, máximo 100 palabras. '
                 'Describe la premisa y el tono sin revelar el desenlace. '
                 'Escríbela en una sola línea, sin saltos de línea."'
-            )
-        if "publisher_url" in missing:
-            fields_desc.append(
-                '"publisher_url": "URL de la página oficial del libro en el sitio web de la editorial. '
-                'Si no existe una URL conocida, devuelve null."'
             )
         if "tagline" in missing:
             fields_desc.append(

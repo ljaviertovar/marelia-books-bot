@@ -14,7 +14,6 @@ def test_make_book_key_and_duplicate_match():
             title="Dune",
             author="Frank Herbert",
             series=None,
-            status=None,
         )
     ]
 

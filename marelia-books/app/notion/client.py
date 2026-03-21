@@ -129,6 +129,56 @@ def _metadata_category_display(metadata: ResolvedBookMetadata) -> str | None:
     return metadata.genre_es
 
 
+def _publication_display(metadata: ResolvedBookMetadata) -> str | None:
+    if metadata.year and metadata.language:
+        return f"{metadata.year} ({metadata.language})"
+    if metadata.year:
+        return str(metadata.year)
+    return metadata.language
+
+
+def _append_standard_note_lines(lines: list[str], metadata: ResolvedBookMetadata) -> None:
+    if metadata.title:
+        lines.append(f"Title: {metadata.title}")
+    if metadata.subtitle:
+        lines.append(f"Subtitle: {metadata.subtitle}")
+    if metadata.title_es:
+        lines.append(f"Title (ES): {metadata.title_es}")
+    category_display = _metadata_category_display(metadata)
+    if category_display:
+        lines.append(f"Genre: {category_display}")
+    publication = _publication_display(metadata)
+    if publication:
+        lines.append(f"Original publication (language): {publication}")
+    if metadata.publisher:
+        lines.append(f"Editorial: {metadata.publisher}")
+    if metadata.isbn:
+        lines.append(f"ISBN: {metadata.isbn}")
+    if metadata.pages:
+        lines.append(f"Pages: {metadata.pages}")
+
+
+def _append_standard_note_values(values: dict[str, str], metadata: ResolvedBookMetadata) -> None:
+    if metadata.title:
+        values["Title:"] = metadata.title
+    if metadata.subtitle:
+        values["Subtitle:"] = metadata.subtitle
+    if metadata.title_es:
+        values["Title (ES):"] = metadata.title_es
+    category_display = _metadata_category_display(metadata)
+    if category_display:
+        values["Genre:"] = category_display
+    publication = _publication_display(metadata)
+    if publication:
+        values["Original publication (language):"] = publication
+    if metadata.publisher:
+        values["Editorial:"] = metadata.publisher
+    if metadata.isbn:
+        values["ISBN:"] = metadata.isbn
+    if metadata.pages:
+        values["Pages:"] = str(metadata.pages)
+
+
 def _rich_text_segments(text: str, *, url: str | None = None) -> list[dict[str, Any]]:
     segment: dict[str, Any] = {"type": "text", "text": {"content": text}}
     if url:
@@ -199,14 +249,9 @@ def _is_empty_property(prop_name: str, prop_value: dict[str, Any] | None) -> boo
     return False
 
 
-def build_create_properties(metadata: ResolvedBookMetadata) -> dict[str, Any]:
+def _metadata_property_values(metadata: ResolvedBookMetadata) -> dict[str, dict[str, Any]]:
     categories = _effective_categories(metadata)
-    properties: dict[str, Any] = {
-        "Book Name": _title_prop(metadata.title),
-        "Status": _status_prop("Wishlist"),
-        "Book Type": _select_prop("TBD"),
-        "Reading Type": _select_prop("TBD"),
-    }
+    properties: dict[str, dict[str, Any]] = {}
 
     if metadata.author:
         properties["Author"] = _rich_text_prop(metadata.author)
@@ -218,34 +263,36 @@ def build_create_properties(metadata: ResolvedBookMetadata) -> dict[str, Any]:
         properties["Cover"] = _file_prop(metadata.cover_url)
     if categories:
         properties["Genre"] = _multi_select_prop(categories)
+    if metadata.reading_type:
+        properties["Reading Type"] = _select_prop(metadata.reading_type)
+    if metadata.type:
+        properties["Book Type"] = _select_prop(metadata.type)
     if metadata.link:
         properties["Link"] = _url_prop(metadata.link)
 
     return properties
 
 
+def build_create_properties(metadata: ResolvedBookMetadata) -> dict[str, Any]:
+    properties: dict[str, Any] = {
+        "Book Name": _title_prop(metadata.title),
+        "Status": _status_prop("Wishlist"),
+        "Book Type": _select_prop("TBD"),
+        "Reading Type": _select_prop("TBD"),
+    }
+    properties.update({
+        name: value
+        for name, value in _metadata_property_values(metadata).items()
+        if name not in {"Reading Type", "Book Type"}
+    })
+    return properties
+
+
 def build_missing_update_properties(raw_properties: dict[str, Any], metadata: ResolvedBookMetadata) -> dict[str, Any]:
-    existing = raw_properties
-    categories = _effective_categories(metadata)
     updates: dict[str, Any] = {}
-
-    if metadata.author and _is_empty_property("Author", existing.get("Author")):
-        updates["Author"] = _rich_text_prop(metadata.author)
-    if metadata.series and _is_empty_property("Book Series", existing.get("Book Series")):
-        updates["Book Series"] = _rich_text_prop(metadata.series)
-    if metadata.order_to_read is not None and _is_empty_property("Order to Read", existing.get("Order to Read")):
-        updates["Order to Read"] = _number_prop(metadata.order_to_read)
-    if metadata.cover_url and _is_empty_property("Cover", existing.get("Cover")):
-        updates["Cover"] = _file_prop(metadata.cover_url)
-    if categories and _is_empty_property("Genre", existing.get("Genre")):
-        updates["Genre"] = _multi_select_prop(categories)
-    if metadata.reading_type and _is_empty_property("Reading Type", existing.get("Reading Type")):
-        updates["Reading Type"] = _select_prop(metadata.reading_type)
-    if metadata.type and _is_empty_property("Book Type", existing.get("Book Type")):
-        updates["Book Type"] = _select_prop(metadata.type)
-    if metadata.link and _is_empty_property("Link", existing.get("Link")):
-        updates["Link"] = _url_prop(metadata.link)
-
+    for name, value in _metadata_property_values(metadata).items():
+        if _is_empty_property(name, raw_properties.get(name)):
+            updates[name] = value
     return updates
 
 
@@ -256,29 +303,11 @@ def _build_note_blocks(metadata: ResolvedBookMetadata) -> list[dict[str, Any]]:
         blocks.append(_callout_block(metadata.tagline))
 
     detail_lines: list[str] = []
-    if metadata.title:
-        detail_lines.append(f"Title: {metadata.title}")
-    if metadata.subtitle:
-        detail_lines.append(f"Subtitle: {metadata.subtitle}")
-    if metadata.title_es:
-        detail_lines.append(f"Title (ES): {metadata.title_es}")
-    category_display = _metadata_category_display(metadata)
-    if category_display:
-        detail_lines.append(f"Genre: {category_display}")
+    _append_standard_note_lines(detail_lines, metadata)
     if metadata.genre_es:
         detail_lines.append(f"Genero: {metadata.genre_es}")
     if metadata.series:
         detail_lines.append(f"Serie: {metadata.series}")
-    if metadata.year and metadata.language:
-        detail_lines.append(f"Original publication (language): {metadata.year} ({metadata.language})")
-    elif metadata.year:
-        detail_lines.append(f"Original publication (language): {metadata.year}")
-    elif metadata.language:
-        detail_lines.append(f"Original publication (language): {metadata.language}")
-    if metadata.publisher:
-        detail_lines.append(f"Editorial: {metadata.publisher}")
-    if metadata.isbn:
-        detail_lines.append(f"ISBN: {metadata.isbn}")
     if metadata.pages:
         detail_lines.append(f"Paginas: {metadata.pages}")
 
@@ -348,31 +377,8 @@ def _replace_image_block_payload(block: dict[str, Any], image_url: str) -> dict[
 
 
 def _notes_label_values(metadata: ResolvedBookMetadata) -> dict[str, str]:
-    publication = (
-        f"{metadata.year} ({metadata.language})"
-        if metadata.year and metadata.language
-        else str(metadata.year)
-        if metadata.year
-        else metadata.language
-    )
     values: dict[str, str] = {}
-    if metadata.title:
-        values["Title:"] = metadata.title
-    if metadata.subtitle:
-        values["Subtitle:"] = metadata.subtitle
-    if metadata.title_es:
-        values["Title (ES):"] = metadata.title_es
-    category = _metadata_category_display(metadata)
-    if category:
-        values["Genre:"] = category
-    if publication:
-        values["Original publication (language):"] = publication
-    if metadata.publisher:
-        values["Editorial:"] = metadata.publisher
-    if metadata.isbn:
-        values["ISBN:"] = metadata.isbn
-    if metadata.pages:
-        values["Pages:"] = str(metadata.pages)
+    _append_standard_note_values(values, metadata)
     return values
 
 

@@ -12,7 +12,6 @@ class NotionBookRecord:
     title: str | None
     author: str | None
     series: str | None
-    status: str | None
     # Raw properties kept internally for update operations (not for matching logic)
     _raw_properties: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
@@ -28,7 +27,6 @@ def _flatten_page(page: dict[str, Any]) -> NotionBookRecord:
         title=_extract_title(props.get("Book Name")),
         author=_extract_rich_text(props.get("Author")),
         series=_extract_rich_text(props.get("Book Series")),
-        status=_extract_status(props.get("Status")),
         _raw_properties=props,
     )
 
@@ -49,10 +47,3 @@ def _extract_rich_text(value: dict[str, Any] | None) -> str | None:
     if not items:
         return None
     return (items[0].get("plain_text") or "").strip() or None
-
-
-def _extract_status(value: dict[str, Any] | None) -> str | None:
-    if not value:
-        return None
-    status = value.get("status") or {}
-    return status.get("name") or None

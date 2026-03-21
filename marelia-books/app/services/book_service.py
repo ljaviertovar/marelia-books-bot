@@ -21,7 +21,6 @@ class TelegramGateway(Protocol):
 
 @dataclass
 class ProcessResult:
-    ok: bool
     message: str
 
 
@@ -100,7 +99,6 @@ class BookService:
         self.start_author_mode(chat_id)
         logger.info("Pidiendo autor para afinar %d opciones [chat_id=%s]", len(candidates), chat_id)
         return ProcessResult(
-            ok=True,
             message=(
                 "🔎 "
                 f"I found a few promising matches for {self._book(title)}.\n"
@@ -113,7 +111,6 @@ class BookService:
         self.clear_input_mode(chat_id)
         if not candidates or choice < 1 or choice > len(candidates):
             return ProcessResult(
-                ok=False,
                 message=(
                     "⚠️ "
                     "That number doesn't match any of the options I showed you.\n"
@@ -124,10 +121,7 @@ class BookService:
         selected = candidates[choice - 1]
         requested_title = self._pending_search_title.pop(chat_id, None)
         logger.info("Usuario seleccionó opción %d: '%s' — %s", choice, selected.title, selected.author)
-        if requested_title and selected.author:
-            resolved = await self._resolver.resolve(title=requested_title, author=selected.author)
-        else:
-            resolved = await self._resolver.resolve_from_candidate(selected)
+        resolved = await self._resolve_candidate(selected, requested_title=requested_title)
         logger.info("Metadatos resueltos: '%s' — %s", resolved.title, resolved.author or "sin autor")
         logger.debug("Metadata completa:\n%s", "\n".join(f"  {k}: {v}" for k, v in resolved.model_dump().items()))
         return await self._upsert_book(resolved, chat_id=chat_id, requested_title=requested_title)
@@ -138,7 +132,6 @@ class BookService:
             self.clear_input_mode(chat_id)
             self._clear_pending_search(chat_id)
             return ProcessResult(
-                ok=False,
                 message=(
                     "⚠️ "
                     "I can't find the previous search anymore.\n"
@@ -148,7 +141,7 @@ class BookService:
 
         if normalize_book_text(author_text) in {"skip", "omitir"}:
             self.clear_input_mode(chat_id)
-            return ProcessResult(ok=True, message=self._format_candidate_options(candidates))
+            return ProcessResult(message=self._format_candidate_options(candidates))
 
         narrowed = self._filter_candidates_by_author(candidates, author_text)
         logger.info(
@@ -163,20 +156,16 @@ class BookService:
             self.clear_input_mode(chat_id)
             selected = narrowed[0]
             requested_title = self._pending_search_title.pop(chat_id, None)
-            if requested_title and selected.author:
-                resolved = await self._resolver.resolve(title=requested_title, author=selected.author)
-            else:
-                resolved = await self._resolver.resolve_from_candidate(selected)
+            resolved = await self._resolve_candidate(selected, requested_title=requested_title)
             logger.info("Autor refinó a una sola opción: '%s' — %s", resolved.title, resolved.author or "sin autor")
             return await self._upsert_book(resolved, chat_id=chat_id, requested_title=requested_title)
 
         if len(narrowed) > 1:
             self._pending[chat_id] = narrowed
             self.clear_input_mode(chat_id)
-            return ProcessResult(ok=True, message=self._format_candidate_options(narrowed))
+            return ProcessResult(message=self._format_candidate_options(narrowed))
 
         return ProcessResult(
-            ok=False,
             message=(
                 "⚠️ "
                 "I couldn't narrow it down with that author just yet.\n"
@@ -184,6 +173,16 @@ class BookService:
                 + self._format_candidate_options(candidates)
             ),
         )
+
+    async def _resolve_candidate(
+        self,
+        candidate: BookCandidate,
+        *,
+        requested_title: str | None = None,
+    ) -> ResolvedBookMetadata:
+        if requested_title and candidate.author:
+            return await self._resolver.resolve(title=requested_title, author=candidate.author)
+        return await self._resolver.resolve_from_candidate(candidate)
 
     async def process_image_command(self, file_id: str, chat_id: int) -> ProcessResult:
         logger.info("Procesando imagen de portada")
@@ -195,7 +194,6 @@ class BookService:
         except GeminiVisionQuotaError:
             logger.warning("Gemini Vision sin cuota disponible — solicitando fallback manual por texto")
             return ProcessResult(
-                ok=False,
                 message=(
                     "⚠️ "
                     "I've reached the vision limit for now.\n"
@@ -205,7 +203,6 @@ class BookService:
         except GeminiVisionResponseError as exc:
             logger.warning("Gemini Vision devolvió una respuesta inválida — solicitando reintento: %s", exc)
             return ProcessResult(
-                ok=False,
                 message=(
                     "⚠️ "
                     "I couldn't read that cover properly because Gemini returned an incomplete response.\n"
@@ -277,14 +274,10 @@ class BookService:
     def _validate_vision(self, extraction: VisionBookExtraction) -> ProcessResult | None:
         if not extraction.is_book_cover:
             reason = extraction.reason_if_not_book or "that doesn't look like a book cover to me."
-            return ProcessResult(
-                ok=False,
-                message=f"⚠️ I couldn't add that image for you.\n{html.escape(reason)}"
-            )
+            return ProcessResult(message=f"⚠️ I couldn't add that image for you.\n{html.escape(reason)}")
 
         if extraction.confidence < 0.60:
             return ProcessResult(
-                ok=False,
                 message=(
                     "📸 "
                     "The image looks a little blurry.\n"
@@ -296,7 +289,6 @@ class BookService:
             title = extraction.title or "Unknown"
             author = extraction.authors[0] if extraction.authors else "Unknown"
             return ProcessResult(
-                ok=False,
                 message=(
                     "📕 "
                     f"I think this might be {self._book(title)} by {html.escape(author)}, "
@@ -307,7 +299,6 @@ class BookService:
 
         if not extraction.title:
             return ProcessResult(
-                ok=False,
                 message=(
                     "📸 "
                     "I couldn't make out the title clearly.\n"
@@ -340,7 +331,6 @@ class BookService:
             if self._dry_run:
                 logger.info("[DRY RUN] El libro ya existe — se actualizarían campos")
                 return ProcessResult(
-                    ok=True,
                     message=(
                         "📚 "
                         f"[DRY RUN] {self._book(metadata.title)} is already in your Notion.\n"
@@ -352,7 +342,6 @@ class BookService:
             logger.info("Campos faltantes actualizados: %s", changed)
             if changed:
                 return ProcessResult(
-                    ok=True,
                     message=(
                         "✨ "
                         f"{self._book(metadata.title)} was already in your list.\n"
@@ -360,7 +349,6 @@ class BookService:
                     ),
                 )
             return ProcessResult(
-                ok=True,
                 message=(
                     "📚 "
                     f"{self._book(metadata.title)} is already in your reading list.\n"
@@ -371,7 +359,6 @@ class BookService:
         if self._dry_run:
             logger.info("[DRY RUN] Se crearía el libro en Notion")
             return ProcessResult(
-                ok=True,
                 message=(
                     "📚 "
                     f"[DRY RUN] I would add {self._book(metadata.title)} to your Notion list."
@@ -391,7 +378,6 @@ class BookService:
         page_id = await self._notion.create_book_page(metadata)
         logger.info("Libro creado en Notion [id=%s]", page_id)
         return ProcessResult(
-            ok=True,
             message=(
                 "Done!\n\n"
                 f"📚 I've added {self._book(metadata.title)} to your reading list for you."

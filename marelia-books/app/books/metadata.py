@@ -6,8 +6,6 @@ import unicodedata
 
 import httpx
 from pydantic import BaseModel, Field
-from urllib.parse import quote_plus
-
 logger = __import__("logging").getLogger(__name__)
 
 # MARC/ISO 639-2 language codes → Spanish names (as returned by OpenLibrary)
@@ -134,7 +132,6 @@ class ResolvedBookMetadata(BaseModel):
     title_es: str | None = None
     genre_es: str | None = None
     synopsis: str | None = None
-    publisher_url: str | None = None
     tagline: str | None = None
 
 
@@ -207,13 +204,6 @@ def resolve_openlibrary_cover_url(doc: dict[str, Any]) -> str | None:
         return f"https://covers.openlibrary.org/b/id/{cover_i}-L.jpg"
 
     return None
-
-
-def build_amazon_search_url(title: str | None, author: str | None = None) -> str | None:
-    query_parts = [part.strip() for part in (title, author) if part and part.strip()]
-    if not query_parts:
-        return None
-    return f"https://www.amazon.com/s?k={quote_plus(' '.join(query_parts))}"
 
 
 def _extract_work_key(doc: dict[str, Any]) -> str | None:
