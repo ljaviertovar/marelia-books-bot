@@ -87,7 +87,7 @@ When `DRY_RUN=true`, the bot performs the full flow (parse, vision, metadata, du
 3. Existing book match:
    - Match rule: normalized title + normalized author.
    - If exists: only fills missing `Author`, `Book Series`, `Cover`, `Category`, `Reading Type`, `Type`, `Link`.
-   - Never changes `Order to read`, `Score`, `Start Date`, `Finish Date`, `Status`.
+   - Never changes `Order to Read`, `Score`, `Start Date`, `Finish Date`, `Status`.
 
 ## Tests
 

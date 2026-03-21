@@ -381,7 +381,7 @@ class BookService:
         await self._telegram.send_message(
             chat_id,
             (
-                "📕 "
+                "⏳ "
                 f"I'm adding {self._book(metadata.title_es or metadata.title)} to Notion for you now.\n"
                 "Give me just a little moment."
             ),
@@ -393,8 +393,8 @@ class BookService:
         return ProcessResult(
             ok=True,
             message=(
-                "📚 "
-                f"I've added {self._book(metadata.title)} to your reading list for you."
+                "Done!\n\n"
+                f"📚 I've added {self._book(metadata.title)} to your reading list for you."
             ),
         )
 

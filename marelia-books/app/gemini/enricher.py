@@ -30,7 +30,7 @@ class GeminiEnricher:
     async def enrich(self, metadata: ResolvedBookMetadata) -> ResolvedBookMetadata:
         """Call Gemini to fill in text fields missing from OpenLibrary."""
         missing = [
-            k for k in ("title_es", "genre_es", "synopsis", "publisher_url", "tagline", "isbn", "pages")
+            k for k in ("title_es", "genre_es", "synopsis", "publisher_url", "tagline", "isbn", "pages", "order_to_read")
             if getattr(metadata, k) is None
         ]
         if sanitize_series_name(metadata.series) is None:
@@ -62,12 +62,13 @@ class GeminiEnricher:
             if "series" in updates:
                 updates["series"] = sanitize_series_name(updates["series"])
             updated = metadata.model_copy(update=updates)
+            updated = self._ensure_series_in_tagline(updated)
         except Exception as exc:
             logger.warning("Gemini enricher falló — el libro se creará sin enriquecimiento: %s", exc)
             return metadata
 
         logger.info(
-            "Enriquecimiento completado: title_es=%r genre_es=%r synopsis_len=%s publisher_url=%r tagline=%r isbn=%r pages=%r series=%r",
+            "Enriquecimiento completado: title_es=%r genre_es=%r synopsis_len=%s publisher_url=%r tagline=%r isbn=%r pages=%r series=%r order_to_read=%r",
             updated.title_es,
             updated.genre_es,
             len(updated.synopsis) if updated.synopsis else 0,
@@ -76,8 +77,27 @@ class GeminiEnricher:
             updated.isbn,
             updated.pages,
             updated.series,
+            updated.order_to_read,
         )
         return updated
+
+    @staticmethod
+    def _ensure_series_in_tagline(metadata: ResolvedBookMetadata) -> ResolvedBookMetadata:
+        if not metadata.series or not metadata.tagline:
+            return metadata
+
+        tagline_lower = metadata.tagline.lower()
+        series_lower = metadata.series.lower()
+        if series_lower in tagline_lower:
+            return metadata
+
+        connector = " It belongs to the "
+        if metadata.tagline.endswith((".", "!", "?")):
+            updated_tagline = metadata.tagline + connector + metadata.series + "."
+        else:
+            updated_tagline = metadata.tagline + "." + connector + metadata.series + "."
+
+        return metadata.model_copy(update={"tagline": updated_tagline})
 
     def _build_prompt(self, metadata: ResolvedBookMetadata, missing: list[str]) -> str:
         known_parts = [
@@ -99,6 +119,8 @@ class GeminiEnricher:
             known_parts.append(f'- Categories: {", ".join(metadata.categories)}')
         if metadata.series:
             known_parts.append(f'- Existing series hint: "{metadata.series}"')
+        if metadata.order_to_read:
+            known_parts.append(f'- Existing order in series: {metadata.order_to_read}')
 
         fields_desc: list[str] = []
         if "title_es" in missing:
@@ -126,6 +148,7 @@ class GeminiEnricher:
             fields_desc.append(
                 '"tagline": "Una descripción breve del libro en español, de 1 a 2 oraciones naturales. '
                 'Debe mencionar el título, el género/tipo de obra y el autor o editor. '
+                'Si el libro pertenece a una serie o saga, menciónala de forma natural en el texto. '
                 'Ejemplo: \'Dune es una novela de ciencia ficción escrita por Frank Herbert.\' '
                 'No uses comillas en el texto de salida."'
             )
@@ -144,6 +167,11 @@ class GeminiEnricher:
                 'No devuelvas etiquetas comerciales como \'Best Seller\', \'Bestseller\', '
                 '\'New York Times Bestseller\', premios, ediciones o slogans. '
                 'Si el libro no pertenece a una serie clara, devuelve null."'
+            )
+        if "order_to_read" in missing:
+            fields_desc.append(
+                '"order_to_read": "Número de lectura del libro dentro de su serie o saga, por ejemplo 1, 2, 3. '
+                'Devuelve un entero si es claro y confiable. Si no pertenece a una serie clara o el orden no es confiable, devuelve null."'
             )
 
         fields_json = ",\n  ".join(fields_desc)

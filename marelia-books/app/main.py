@@ -58,7 +58,7 @@ book_service = BookService(
 def _hello_message() -> str:
     name = html.escape(settings.telegram_contact_name)
     return (
-        f"Hi {name} ✨\n\n"
+        f"Hi {name} 👋\n\n"
         "I'm here to help with your library.\n"
         "You can use <code>/addbook &lt;title&gt;</code> or send a photo with the caption "
         "<code>/scanbook</code>."

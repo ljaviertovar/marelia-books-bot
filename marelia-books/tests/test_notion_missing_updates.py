@@ -7,6 +7,7 @@ def test_update_only_missing_fields_logic():
     existing_properties = {
         "Author": {"rich_text": [{"plain_text": "Existing Author"}]},
         "Book Series": {"rich_text": []},
+        "Order to Read": {"number": None},
         "Cover": {"url": None},
         "Genre": {"multi_select": []},
         "Reading Type": {"select": {"name": None}},
@@ -20,6 +21,7 @@ def test_update_only_missing_fields_logic():
         title="Example",
         author="New Author",
         series="Series A",
+        order_to_read=2,
         cover_url="https://example.com/cover.jpg",
         categories=["Fantasy"],
         reading_type="Physical",
@@ -32,6 +34,7 @@ def test_update_only_missing_fields_logic():
     assert "Author" not in updates
     assert "Type" not in updates
     assert updates["Book Series"]["rich_text"][0]["text"]["content"] == "Series A"
+    assert updates["Order to Read"]["number"] == 2
     assert updates["Cover"]["files"][0]["external"]["url"] == "https://example.com/cover.jpg"
     assert updates["Genre"]["multi_select"][0]["name"] == "Fantasy"
     assert updates["Reading Type"]["select"]["name"] == "Physical"

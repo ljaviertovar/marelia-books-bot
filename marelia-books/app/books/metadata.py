@@ -119,6 +119,7 @@ class ResolvedBookMetadata(BaseModel):
     subtitle: str | None = None
     author: str | None = None
     series: str | None = None
+    order_to_read: int | None = None
     cover_url: str | None = None
     categories: list[str] = Field(default_factory=list)
     reading_type: str = "Physical"

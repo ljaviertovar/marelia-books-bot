@@ -71,11 +71,13 @@ def test_build_create_properties_infers_genre_from_metadata_when_missing():
         title="Proyecto Hail Mary",
         categories=[],
         genre_es="Ciencia ficcion (Dura)",
+        order_to_read=3,
     )
 
     props = build_create_properties(metadata)
 
     assert props["Genre"]["multi_select"][0]["name"] == "Sci-Fi"
+    assert props["Order to Read"]["number"] == 3
 
 
 def test_plan_section_appends_uses_new_page_headings_not_template_source():

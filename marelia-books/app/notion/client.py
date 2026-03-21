@@ -56,6 +56,10 @@ def _url_prop(url: str) -> dict[str, Any]:
     return {"url": url}
 
 
+def _number_prop(value: int) -> dict[str, Any]:
+    return {"number": value}
+
+
 def _file_prop(url: str) -> dict[str, Any]:
     return {"files": [{"type": "external", "name": "Cover", "external": {"url": url}}]}
 
@@ -185,6 +189,8 @@ def _is_empty_property(prop_name: str, prop_value: dict[str, Any] | None) -> boo
         return not (prop_value.get("files") or [])
     if prop_name == "Genre":
         return not (prop_value.get("multi_select") or [])
+    if prop_name == "Order to Read":
+        return prop_value.get("number") is None
     if prop_name in {"Reading Type", "Book Type"}:
         return not (prop_value.get("select") or {}).get("name")
     if prop_name == "Link":
@@ -206,6 +212,8 @@ def build_create_properties(metadata: ResolvedBookMetadata) -> dict[str, Any]:
         properties["Author"] = _rich_text_prop(metadata.author)
     if metadata.series:
         properties["Book Series"] = _rich_text_prop(metadata.series)
+    if metadata.order_to_read is not None:
+        properties["Order to Read"] = _number_prop(metadata.order_to_read)
     if metadata.cover_url:
         properties["Cover"] = _file_prop(metadata.cover_url)
     if categories:
@@ -225,6 +233,8 @@ def build_missing_update_properties(raw_properties: dict[str, Any], metadata: Re
         updates["Author"] = _rich_text_prop(metadata.author)
     if metadata.series and _is_empty_property("Book Series", existing.get("Book Series")):
         updates["Book Series"] = _rich_text_prop(metadata.series)
+    if metadata.order_to_read is not None and _is_empty_property("Order to Read", existing.get("Order to Read")):
+        updates["Order to Read"] = _number_prop(metadata.order_to_read)
     if metadata.cover_url and _is_empty_property("Cover", existing.get("Cover")):
         updates["Cover"] = _file_prop(metadata.cover_url)
     if categories and _is_empty_property("Genre", existing.get("Genre")):
