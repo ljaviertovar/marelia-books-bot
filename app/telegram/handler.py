@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import logging
 from collections import deque
 from dataclasses import dataclass
@@ -36,7 +35,7 @@ class TelegramUpdate(BaseModel):
 
 @dataclass
 class ParsedCommand:
-    kind: str  # text | image
+    kind: str  # text | image | addbook_help | scanbook_help
     title: str | None = None
     file_id: str | None = None
 
@@ -70,51 +69,93 @@ class TelegramClient:
         await self._client.aclose()
 
     async def send_message(self, chat_id: int, text: str) -> None:
+        logger.debug("Enviando mensaje a Telegram [chat_id=%s]: %r", chat_id, text[:120])
         url = f"https://api.telegram.org/bot{self._bot_token}/sendMessage"
-        response = await self._client.post(url, json={"chat_id": chat_id, "text": text})
+        response = await self._client.post(
+            url,
+            json={
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+            },
+        )
         response.raise_for_status()
+        logger.debug("Mensaje enviado OK [chat_id=%s]", chat_id)
 
-    async def download_file(self, file_id: str) -> tuple[bytes, str]:
+    async def set_my_commands(self) -> None:
+        logger.debug("Registrando slash commands de Telegram")
+        url = f"https://api.telegram.org/bot{self._bot_token}/setMyCommands"
+        response = await self._client.post(
+            url,
+            json={
+                "commands": [
+                    {"command": "addbook", "description": "Add Book to Reading List"},
+                    {"command": "scanbook", "description": "Scan a book to add"},
+                ]
+            },
+        )
+        response.raise_for_status()
+        logger.debug("Slash commands registrados OK")
+
+    async def download_file(self, file_id: str) -> tuple[bytes, str, str]:
+        logger.debug("Descargando imagen de Telegram [file_id=%s]", file_id)
         file_info = await self._client.get(
             f"https://api.telegram.org/bot{self._bot_token}/getFile",
             params={"file_id": file_id},
         )
         file_info.raise_for_status()
         file_path = file_info.json()["result"]["file_path"]
+        logger.debug("Ruta del archivo en Telegram: %s", file_path)
 
-        content = await self._client.get(f"https://api.telegram.org/file/bot{self._bot_token}/{file_path}")
+        file_url = f"https://api.telegram.org/file/bot{self._bot_token}/{file_path}"
+        content = await self._client.get(file_url)
         content.raise_for_status()
 
         mime_type = "image/jpeg"
         if file_path.endswith(".png"):
             mime_type = "image/png"
 
-        return content.content, mime_type
+        logger.debug("Imagen descargada (%d bytes, %s)", len(content.content), mime_type)
+        return content.content, mime_type, file_url
 
 
 
 def parse_supported_command(message: TelegramMessage) -> ParsedCommand | None:
     text = (message.text or "").strip()
     caption = (message.caption or "").strip()
+    logger.debug(
+        "Parseando mensaje [chat_id=%s] texto=%r caption=%r foto=%s",
+        message.chat.id,
+        text[:80] if text else None,
+        caption[:80] if caption else None,
+        bool(message.photo),
+    )
 
-    if text.startswith("Add Book ") and len(text) > len("Add Book "):
-        title = text[len("Add Book ") :].strip()
+    if text.startswith("/addbook ") and len(text) > len("/addbook "):
+        title = text[len("/addbook ") :].strip()
         if title:
+            logger.debug("Comando detectado: texto — título=%r", title)
             return ParsedCommand(kind="text", title=title)
 
-    if message.photo and caption == "Add Book":
+    if text == "/addbook":
+        logger.debug("Comando detectado: addbook_help")
+        return ParsedCommand(kind="addbook_help")
+
+    if text == "/scanbook":
+        logger.debug("Comando detectado: scanbook_help")
+        return ParsedCommand(kind="scanbook_help")
+
+    if message.photo and caption == "/scanbook":
         photo = sorted(message.photo, key=lambda x: x.width * x.height)[-1]
+        logger.debug("Comando detectado: imagen — file_id=%s", photo.file_id)
         return ParsedCommand(kind="image", file_id=photo.file_id)
 
+    logger.debug("Sin comando reconocido [chat_id=%s]", message.chat.id)
     return None
 
 
 
 def log_incoming_command(update: TelegramUpdate, command: ParsedCommand | None) -> None:
     chat_id = update.message.chat.id if update.message else None
-    logger.info(
-        "event=incoming_command update_id=%s chat_id=%s command_kind=%s",
-        update.update_id,
-        chat_id,
-        command.kind if command else "unsupported",
-    )
+    kind = command.kind if command else "unrecognized"
+    logger.info("Message received — type: %s [chat_id=%s]", kind, chat_id)

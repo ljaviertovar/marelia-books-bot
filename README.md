@@ -4,8 +4,8 @@ Single-purpose Telegram bot service that adds books to one fixed Notion Reading 
 
 ## Scope
 - Accepts only:
-  - Text: `Add Book <title>`
-  - Photo with caption: `Add Book`
+  - Text: `/addbook <title>`
+  - Photo with caption: `/scanbook`
 - Works with one fixed Notion database and one fixed Notion template (from env vars).
 - Ignores chats not included in `ALLOWED_CHAT_IDS`.
 
@@ -15,7 +15,7 @@ Single-purpose Telegram bot service that adds books to one fixed Notion Reading 
 - httpx
 - pydantic
 - Telegram Bot API
-- OpenAI API (vision)
+- Gemini API (vision)
 - Notion API
 
 ## Setup
@@ -29,7 +29,7 @@ pip install -e .[dev]
 
 ## Environment variables
 - `TELEGRAM_BOT_TOKEN`
-- `OPENAI_API_KEY`
+- `GEMINI_API_KEY`
 - `NOTION_API_KEY`
 - `NOTION_DATABASE_ID`
 - `NOTION_TEMPLATE_ID`
@@ -40,7 +40,7 @@ Example:
 
 ```bash
 export TELEGRAM_BOT_TOKEN="..."
-export OPENAI_API_KEY="..."
+export GEMINI_API_KEY="..."
 export NOTION_API_KEY="..."
 export NOTION_DATABASE_ID="..."
 export NOTION_TEMPLATE_ID="..."
@@ -74,20 +74,20 @@ When `DRY_RUN=true`, the bot performs the full flow (parse, vision, metadata, du
 
 ## Behavior examples
 1. Text command:
-   - Input: `Add Book Dune`
+   - Input: `/addbook Dune`
    - Behavior: resolve metadata, check duplicate in fixed Notion DB, create with fixed template if missing, or fill allowed missing fields if existing.
 
 2. Image command:
-   - Input: photo + caption `Add Book`
-   - Behavior: run OpenAI vision extraction JSON schema, confidence gate:
+   - Input: photo + caption `/scanbook`
+   - Behavior: run Gemini vision extraction JSON schema, confidence gate:
      - `>= 0.85`: continue automatically
-     - `0.60 - 0.84`: ask user to confirm via `Add Book <title>`
+     - `0.60 - 0.84`: ask user to confirm via `/addbook <title>`
      - `< 0.60`: ask for clearer image
 
 3. Existing book match:
    - Match rule: normalized title + normalized author.
    - If exists: only fills missing `Author`, `Book Series`, `Cover`, `Category`, `Reading Type`, `Type`, `Link`.
-   - Never changes `Order to read`, `Score`, `Start Date`, `Finish Date`, `Status`.
+   - Never changes `Order to Read`, `Score`, `Start Date`, `Finish Date`, `Status`.
 
 ## Tests
 
