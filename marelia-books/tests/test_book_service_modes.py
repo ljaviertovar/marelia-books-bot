@@ -210,3 +210,67 @@ def test_process_image_command_keeps_original_title_when_openlibrary_found_trans
     assert service.captured_metadata.categories == ["Sci-Fi"]
     assert service.captured_metadata.link == "https://openlibrary.org/works/OL27448W"
     assert service.captured_metadata.cover_url == "https://example.com/foundation-cover.jpg"
+
+
+def test_existing_book_is_enriched_before_missing_data_update_and_sends_progress_message():
+    class _Telegram:
+        def __init__(self) -> None:
+            self.messages: list[tuple[int, str]] = []
+
+        async def send_message(self, chat_id, text):
+            self.messages.append((chat_id, text))
+
+    class _Notion:
+        def __init__(self) -> None:
+            self.updated_metadata = None
+
+        async def query_candidate_books(self, title):
+            return [
+                type(
+                    "Record",
+                    (),
+                    {
+                        "page_id": "page-1",
+                        "title": "Dune",
+                        "author": "Frank Herbert",
+                        "series": None,
+                        "_raw_properties": {},
+                    },
+                )()
+            ]
+
+        async def update_book_page_missing(self, record, metadata):
+            self.updated_metadata = metadata
+            return True
+
+    class _Enricher:
+        async def enrich(self, metadata):
+            return metadata.model_copy(update={"tagline": "Dune es una novela de ciencia ficcion de Frank Herbert."})
+
+    notion = _Notion()
+    telegram = _Telegram()
+    service = BookService(
+        notion_client=notion,
+        telegram_client=telegram,
+        vision_client=_Dummy(),
+        metadata_resolver=_Dummy(),
+        enricher=_Enricher(),
+        dry_run=False,
+        contact_name="Taviz",
+    )
+
+    result = asyncio.run(
+        service._upsert_book(
+            ResolvedBookMetadata(title="Dune", author="Frank Herbert"),
+            chat_id=123,
+        )
+    )
+
+    assert notion.updated_metadata is not None
+    assert notion.updated_metadata.tagline == "Dune es una novela de ciencia ficcion de Frank Herbert."
+    assert telegram.messages
+    assert telegram.messages[0][0] == 123
+    assert "Taviz" in telegram.messages[0][1]
+    assert "is already in your reading list" in telegram.messages[0][1]
+    assert "I'll update the missing information for you now." in telegram.messages[0][1]
+    assert "I've updated the missing details for" in result.message

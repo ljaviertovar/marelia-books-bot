@@ -15,6 +15,12 @@ logger = logging.getLogger(__name__)
 
 NOTION_VERSION = "2022-06-28"
 _HEADING_BLOCK_TYPES = frozenset({"heading_1", "heading_2", "heading_3"})
+_REQUIRED_TEMPLATE_SECTIONS = ("notes", "synopsis", "references")
+_SECTION_DEFAULT_HEADINGS = {
+    "notes": "Book Notes",
+    "synopsis": "Synopsis",
+    "references": "References / Links",
+}
 _SECTION_ALIASES: dict[str, tuple[str, ...]] = {
     "notes": (
         "book notes",
@@ -190,6 +196,10 @@ def _paragraph_block(text: str) -> dict[str, Any]:
     return {"object": "block", "type": "paragraph", "paragraph": {"rich_text": _rich_text_segments(text)}}
 
 
+def _heading_block(text: str) -> dict[str, Any]:
+    return {"object": "block", "type": "heading_2", "heading_2": {"rich_text": _rich_text_segments(text)}}
+
+
 def _bulleted_item_block(text: str, *, url: str | None = None) -> dict[str, Any]:
     return {
         "object": "block",
@@ -206,6 +216,18 @@ def _callout_block(text: str) -> dict[str, Any]:
             "rich_text": _rich_text_segments(text),
             "icon": {"type": "emoji", "emoji": "📖"},
             "color": "blue_background",
+        },
+    }
+
+
+def _image_block(image_url: str) -> dict[str, Any]:
+    return {
+        "object": "block",
+        "type": "image",
+        "image": {
+            "type": "external",
+            "external": {"url": image_url},
+            "caption": [],
         },
     }
 
@@ -495,6 +517,32 @@ def plan_section_appends(page_blocks: list[dict[str, Any]], metadata: ResolvedBo
     ]
 
 
+def build_missing_template_blocks(page_blocks: list[dict[str, Any]], metadata: ResolvedBookMetadata) -> list[dict[str, Any]]:
+    present_sections = {
+        section
+        for block in page_blocks
+        if (section := _match_section_name(block)) is not None
+    }
+    section_content = build_section_content(metadata)
+    blocks: list[dict[str, Any]] = []
+
+    if metadata.cover_url and not any(block.get("type") == "image" for block in page_blocks):
+        blocks.append(_image_block(metadata.cover_url))
+
+    for section in _REQUIRED_TEMPLATE_SECTIONS:
+        if section in present_sections:
+            continue
+
+        blocks.append(_heading_block(_SECTION_DEFAULT_HEADINGS[section]))
+        children = section_content.get(section)
+        if children:
+            blocks.extend(children)
+        else:
+            blocks.append(_paragraph_block(""))
+
+    return blocks
+
+
 class NotionClient:
     def __init__(self, api_key: str, database_id: str, template_id: str, timeout_seconds: float = 20.0) -> None:
         self._database_id = database_id
@@ -562,10 +610,11 @@ class NotionClient:
         return page_id
 
     async def update_book_page_missing(self, record: NotionBookRecord, metadata: ResolvedBookMetadata) -> bool:
+        content_changed = await self._ensure_page_content(record.page_id, metadata, seed_missing_sections=True)
         updates = build_missing_update_properties(record._raw_properties, metadata)
         if not updates:
             logger.debug("Sin campos que actualizar en Notion [page_id=%s]", record.page_id)
-            return False
+            return content_changed
 
         logger.info("Actualizando campos en Notion: %s [page_id=%s]", list(updates.keys()), record.page_id)
         await self._request_with_retry(
@@ -591,6 +640,36 @@ class NotionClient:
                 )
                 return
 
+        await self._ensure_page_content(page_id, metadata, blocks=blocks)
+
+    async def _ensure_page_content(
+        self,
+        page_id: str,
+        metadata: ResolvedBookMetadata,
+        *,
+        seed_missing_sections: bool = False,
+        blocks: list[dict[str, Any]] | None = None,
+    ) -> bool:
+        changed = False
+        if blocks is None:
+            blocks = await self._list_block_children(page_id)
+
+        if seed_missing_sections:
+            missing_blocks = build_missing_template_blocks(blocks, metadata)
+            if missing_blocks:
+                logger.info(
+                    "La página no tenía todas las secciones del template; agregando estructura faltante [page_id=%s sections=%s]",
+                    page_id,
+                    len(missing_blocks),
+                )
+                await self._request_with_retry(
+                    "PATCH",
+                    f"https://api.notion.com/v1/blocks/{page_id}/children",
+                    json={"children": missing_blocks},
+                )
+                changed = True
+                blocks = await self._list_block_children(page_id)
+
         all_blocks = await self._list_block_children_recursive(page_id)
         block_updates, filled_sections, placeholder_sections = plan_template_block_updates(all_blocks, metadata)
         for update in block_updates:
@@ -600,6 +679,7 @@ class NotionClient:
                 f"https://api.notion.com/v1/blocks/{update.block_id}",
                 json=update.payload,
             )
+            changed = True
 
         append_plans = [
             plan
@@ -608,7 +688,7 @@ class NotionClient:
         ]
         if not append_plans and not block_updates:
             logger.info("No hay contenido enriquecido o secciones reconocidas para completar [page_id=%s]", page_id)
-            return
+            return changed
 
         for plan in append_plans:
             logger.debug(
@@ -623,6 +703,8 @@ class NotionClient:
                 f"https://api.notion.com/v1/blocks/{page_id}/children",
                 json={"children": plan.children, "after": plan.after_block_id},
             )
+            changed = True
+        return changed
 
     async def _wait_for_page_content(
         self,

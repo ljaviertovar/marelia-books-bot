@@ -59,8 +59,8 @@ def _hello_message() -> str:
     name = html.escape(settings.telegram_contact_name)
     return (
         f"Hi {name} 👋\n\n"
-        "I'm here to help with your library.\n"
-        "You can use <code>/addbook &lt;title&gt;</code> or send a photo with the caption "
+        "I'm here to help with your reading list.\n"
+        "You can send <code>/addbook &lt;title&gt;</code> or a photo with the caption "
         "<code>/scanbook</code>."
     )
 
@@ -135,7 +135,7 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
             await telegram_client.send_message(
                 chat_id,
                 (
-                    "📝 Send me the book title and I'll take care of it for you."
+                    f"📝 {html.escape(settings.telegram_contact_name)}, send me the book title and I'll take care of the rest."
                 ),
             )
             return {"ok": True}
@@ -145,7 +145,7 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
             await telegram_client.send_message(
                 chat_id,
                 (
-                    "📸 Send me the cover photo and I'll scan it for you."
+                    f"📸 {html.escape(settings.telegram_contact_name)}, send me the cover photo and I'll scan it for you."
                 ),
             )
             return {"ok": True}
@@ -154,8 +154,7 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
             await telegram_client.send_message(
                 chat_id,
                 (
-                    f"Hi {html.escape(settings.telegram_contact_name)} ⚠️\n\n"
-                    "I didn't quite understand that command.\n"
+                    f"🤖 {html.escape(settings.telegram_contact_name)}, I didn't understand that command just yet.\n\n"
                     "Please try <code>/addbook &lt;title&gt;</code>."
                 ),
             )
@@ -169,8 +168,7 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
         await telegram_client.send_message(
             chat_id,
             (
-                f"Hi {html.escape(settings.telegram_contact_name)} ⚠️\n\n"
-                "Something went wrong on my side.\n"
+                f"⚠️ {html.escape(settings.telegram_contact_name)}, something went wrong on my side.\n\n"
                 "Please try again in a moment."
             ),
         )

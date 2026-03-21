@@ -1,5 +1,6 @@
 from app.books.metadata import ResolvedBookMetadata
 from app.notion.client import (
+    build_missing_template_blocks,
     build_create_properties,
     build_section_content,
     plan_section_appends,
@@ -116,6 +117,27 @@ def test_plan_section_appends_skips_missing_sections():
     plans = plan_section_appends(page_blocks, metadata)
 
     assert [plan.section for plan in plans] == ["synopsis"]
+
+
+def test_build_missing_template_blocks_adds_required_sections_when_template_is_missing():
+    metadata = ResolvedBookMetadata(
+        title="Dune",
+        synopsis="Sin spoilers.",
+        tagline="A classic sci-fi novel.",
+        cover_url="https://covers.example/dune.jpg",
+    )
+
+    blocks = build_missing_template_blocks([], metadata)
+
+    assert blocks[0]["type"] == "image"
+    assert blocks[0]["image"]["external"]["url"] == metadata.cover_url
+    assert blocks[1]["heading_2"]["rich_text"][0]["text"]["content"] == "Book Notes"
+    assert blocks[2]["type"] == "callout"
+    assert blocks[3]["type"] == "bulleted_list_item"
+    assert blocks[4]["heading_2"]["rich_text"][0]["text"]["content"] == "Synopsis"
+    assert blocks[5]["type"] == "paragraph"
+    assert blocks[6]["heading_2"]["rich_text"][0]["text"]["content"] == "References / Links"
+    assert blocks[7]["type"] == "paragraph"
 
 
 def test_plan_template_block_updates_fills_existing_placeholders_in_place():

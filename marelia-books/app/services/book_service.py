@@ -101,8 +101,8 @@ class BookService:
         return ProcessResult(
             message=(
                 "🔎 "
-                f"I found a few promising matches for {self._book(title)}.\n"
-                "Send me the author name and I'll narrow it down for you, or send <code>skip</code> and I'll show the numbered list."
+                f"{html.escape(self._contact_name)}, I found a few promising matches for {self._book(title)}.\n"
+                "Send me the author name and I'll narrow it down for you, or send <code>skip</code> and I'll show you the numbered list."
             ),
         )
 
@@ -112,8 +112,7 @@ class BookService:
         if not candidates or choice < 1 or choice > len(candidates):
             return ProcessResult(
                 message=(
-                    "⚠️ "
-                    "That number doesn't match any of the options I showed you.\n"
+                    f"🔢 {html.escape(self._contact_name)}, that number doesn't match any of the options I showed you.\n"
                     "Please try again with <code>/addbook &lt;title&gt;</code>."
                 ),
             )
@@ -133,8 +132,7 @@ class BookService:
             self._clear_pending_search(chat_id)
             return ProcessResult(
                 message=(
-                    "⚠️ "
-                    "I can't find the previous search anymore.\n"
+                    f"🧭 {html.escape(self._contact_name)}, I can't find that previous search anymore.\n"
                     "Please try <code>/addbook &lt;title&gt;</code> again."
                 ),
             )
@@ -167,8 +165,7 @@ class BookService:
 
         return ProcessResult(
             message=(
-                "⚠️ "
-                "I couldn't narrow it down with that author just yet.\n"
+                f"🕵️ {html.escape(self._contact_name)}, I still couldn't narrow it down with that author.\n"
                 "Send another author name, send <code>skip</code>, or choose from the full list with a number.\n\n"
                 + self._format_candidate_options(candidates)
             ),
@@ -195,8 +192,7 @@ class BookService:
             logger.warning("Gemini Vision sin cuota disponible — solicitando fallback manual por texto")
             return ProcessResult(
                 message=(
-                    "⚠️ "
-                    "I've reached the vision limit for now.\n"
+                    f"📵 {html.escape(self._contact_name)}, I've reached the vision limit for now.\n"
                     "You can still add the book with <code>/addbook &lt;title&gt;</code>."
                 ),
             )
@@ -204,8 +200,7 @@ class BookService:
             logger.warning("Gemini Vision devolvió una respuesta inválida — solicitando reintento: %s", exc)
             return ProcessResult(
                 message=(
-                    "⚠️ "
-                    "I couldn't read that cover properly because Gemini returned an incomplete response.\n"
+                    f"📸 {html.escape(self._contact_name)}, I couldn't read that cover properly because Gemini returned an incomplete response.\n"
                     "Please send the photo again, or use <code>/addbook &lt;title&gt;</code>."
                 ),
             )
@@ -274,13 +269,12 @@ class BookService:
     def _validate_vision(self, extraction: VisionBookExtraction) -> ProcessResult | None:
         if not extraction.is_book_cover:
             reason = extraction.reason_if_not_book or "that doesn't look like a book cover to me."
-            return ProcessResult(message=f"⚠️ I couldn't add that image for you.\n{html.escape(reason)}")
+            return ProcessResult(message=f"🖼️ {html.escape(self._contact_name)}, I couldn't add that image for you.\n{html.escape(reason)}")
 
         if extraction.confidence < 0.60:
             return ProcessResult(
                 message=(
-                    "📸 "
-                    "The image looks a little blurry.\n"
+                    f"📸 {html.escape(self._contact_name)}, the photo looks a little blurry.\n"
                     "Please send a clearer photo of the cover."
                 ),
             )
@@ -290,8 +284,7 @@ class BookService:
             author = extraction.authors[0] if extraction.authors else "Unknown"
             return ProcessResult(
                 message=(
-                    "📕 "
-                    f"I think this might be {self._book(title)} by {html.escape(author)}, "
+                    f"📕 {html.escape(self._contact_name)}, I think this might be {self._book(title)} by {html.escape(author)}, "
                     f"but I'm not completely sure ({extraction.confidence:.0%} confidence).\n"
                     "Could you confirm it with <code>/addbook &lt;title&gt;</code>?"
                 ),
@@ -300,8 +293,7 @@ class BookService:
         if not extraction.title:
             return ProcessResult(
                 message=(
-                    "📸 "
-                    "I couldn't make out the title clearly.\n"
+                    f"📸 {html.escape(self._contact_name)}, I couldn't make out the title clearly.\n"
                     "Please try a clearer photo of the cover."
                 ),
             )
@@ -332,27 +324,32 @@ class BookService:
                 logger.info("[DRY RUN] El libro ya existe — se actualizarían campos")
                 return ProcessResult(
                     message=(
-                        "📚 "
-                        f"[DRY RUN] {self._book(metadata.title)} is already in your Notion.\n"
-                        "I would fill in the missing details."
+                        f"🧪 {html.escape(self._contact_name)}, [DRY RUN] {self._book(metadata.title)} is already in your reading list.\n"
+                        "I'd fill in the missing details for you."
                     ),
                 )
 
+            await self._telegram.send_message(
+                chat_id,
+                (
+                    "⏳ "
+                    f"{self._book(metadata.title_es or metadata.title)} is already in your reading list.\n"
+                    "I'll update the missing information for you now."
+                ),
+            )
+            metadata = await self._enricher.enrich(metadata)
+            metadata.series = sanitize_series_name(metadata.series)
             changed = await self._notion.update_book_page_missing(existing, metadata)
             logger.info("Campos faltantes actualizados: %s", changed)
             if changed:
                 return ProcessResult(
                     message=(
-                        "✨ "
-                        f"{self._book(metadata.title)} was already in your list.\n"
-                        "I filled in the missing details for you."
+                        f"Done!\n🔄 I've updated the missing details for {self._book(metadata.title)} in Notion."
                     ),
                 )
             return ProcessResult(
                 message=(
-                    "📚 "
-                    f"{self._book(metadata.title)} is already in your reading list.\n"
-                    "Everything already looks up to date."
+                    f"📚 {html.escape(self._contact_name)}, {self._book(metadata.title)} is already up to date in Notion."
                 ),
             )
 
@@ -360,8 +357,7 @@ class BookService:
             logger.info("[DRY RUN] Se crearía el libro en Notion")
             return ProcessResult(
                 message=(
-                    "📚 "
-                    f"[DRY RUN] I would add {self._book(metadata.title)} to your Notion list."
+                    f"🧪 {html.escape(self._contact_name)}, [DRY RUN] I'd add {self._book(metadata.title)} to your reading list."
                 ),
             )
 
@@ -379,8 +375,7 @@ class BookService:
         logger.info("Libro creado en Notion [id=%s]", page_id)
         return ProcessResult(
             message=(
-                "Done!\n\n"
-                f"📚 I've added {self._book(metadata.title)} to your reading list for you."
+                f"Done!\n📚 I've added {self._book(metadata.title)} to your reading list."
             ),
         )
 
@@ -399,7 +394,7 @@ class BookService:
 
     def _format_candidate_options(self, candidates: list[BookCandidate]) -> str:
         name = html.escape(self._contact_name)
-        lines = [f"🔎 Here are the closest matches I found, {name}:\n"]
+        lines = [f"🔎 {name}, here are the closest matches I found:\n"]
         for i, c in enumerate(candidates, 1):
             author = c.author or "unknown author"
             details: list[str] = []
