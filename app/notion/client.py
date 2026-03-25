@@ -125,7 +125,12 @@ def _infer_categories_from_genre(genre_es: str | None) -> list[str]:
 def _effective_categories(metadata: ResolvedBookMetadata) -> list[str]:
     if metadata.categories:
         return _normalize_categories(metadata.categories)
-    return _infer_categories_from_genre(metadata.genre_es)
+    inferred = _infer_categories_from_genre(metadata.genre_es)
+    if inferred:
+        return inferred
+    if metadata.genre_es:
+        return _normalize_categories([metadata.genre_es])
+    return []
 
 
 def _metadata_category_display(metadata: ResolvedBookMetadata) -> str | None:
@@ -192,6 +197,30 @@ def _rich_text_segments(text: str, *, url: str | None = None) -> list[dict[str, 
     return [segment]
 
 
+def _clone_rich_text_segments(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    segments: list[dict[str, Any]] = []
+    for item in items or []:
+        if item.get("type") != "text":
+            continue
+        text = item.get("text", {}) or {}
+        segment: dict[str, Any] = {
+            "type": "text",
+            "text": {
+                "content": text.get("content", "") or item.get("plain_text", "") or "",
+            },
+        }
+        link = text.get("link")
+        if link and link.get("url"):
+            segment["text"]["link"] = {"url": link["url"]}
+        annotations = item.get("annotations")
+        if annotations:
+            segment["annotations"] = annotations
+        if item.get("href"):
+            segment["href"] = item["href"]
+        segments.append(segment)
+    return segments
+
+
 def _paragraph_block(text: str) -> dict[str, Any]:
     return {"object": "block", "type": "paragraph", "paragraph": {"rich_text": _rich_text_segments(text)}}
 
@@ -230,6 +259,57 @@ def _image_block(image_url: str) -> dict[str, Any]:
             "caption": [],
         },
     }
+
+
+def _clone_block_for_append(block: dict[str, Any]) -> dict[str, Any] | None:
+    block_type = block.get("type")
+    if not block_type:
+        return None
+
+    payload: dict[str, Any] = {"object": "block", "type": block_type}
+    source = dict(block.get(block_type, {}) or {})
+
+    if block_type in {"paragraph", "heading_1", "heading_2", "heading_3", "bulleted_list_item", "numbered_list_item", "quote", "to_do", "toggle", "callout"}:
+        cloned = dict(source)
+        if "rich_text" in cloned:
+            cloned["rich_text"] = _clone_rich_text_segments(cloned.get("rich_text", []))
+        if block_type == "callout" and "icon" in cloned:
+            cloned["icon"] = cloned["icon"]
+        if block_type == "to_do":
+            cloned["checked"] = bool(cloned.get("checked"))
+        if block.get("has_children"):
+            children = _clone_children_for_append(block.get("children", []))
+            if children:
+                cloned["children"] = children
+        payload[block_type] = cloned
+        return payload
+
+    if block_type == "image":
+        image = source
+        image_type = image.get("type")
+        if image_type == "external" and image.get("external", {}).get("url"):
+            payload["image"] = {
+                "type": "external",
+                "external": {"url": image["external"]["url"]},
+                "caption": _clone_rich_text_segments(image.get("caption", [])),
+            }
+            return payload
+        return None
+
+    if block_type == "divider":
+        payload["divider"] = {}
+        return payload
+
+    return None
+
+
+def _clone_children_for_append(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    cloned: list[dict[str, Any]] = []
+    for block in blocks:
+        payload = _clone_block_for_append(block)
+        if payload:
+            cloned.append(payload)
+    return cloned
 
 
 def _extract_plain_text(rich_text: list[dict[str, Any]]) -> str:
@@ -543,6 +623,10 @@ def build_missing_template_blocks(page_blocks: list[dict[str, Any]], metadata: R
     return blocks
 
 
+def _has_template_structure(blocks: list[dict[str, Any]]) -> bool:
+    return any(_match_section_name(block) for block in blocks)
+
+
 class NotionClient:
     def __init__(self, api_key: str, database_id: str, template_id: str, timeout_seconds: float = 20.0) -> None:
         self._database_id = database_id
@@ -627,13 +711,13 @@ class NotionClient:
 
     async def _populate_created_page(self, page_id: str, metadata: ResolvedBookMetadata) -> None:
         blocks = await self._wait_for_page_content(page_id)
-        if not any(_match_section_name(block) for block in blocks):
+        if not _has_template_structure(blocks):
             logger.warning(
                 "El template no apareció a tiempo; reintentando una vez más antes de continuar sin template [page_id=%s]",
                 page_id,
             )
             blocks = await self._wait_for_page_content(page_id, max_attempts=4, delay_seconds=1.0)
-            if not any(_match_section_name(block) for block in blocks):
+            if not _has_template_structure(blocks):
                 logger.warning(
                     "El template no estuvo disponible tras el reintento; la página se conservará sin template [page_id=%s]",
                     page_id,
@@ -655,20 +739,8 @@ class NotionClient:
             blocks = await self._list_block_children(page_id)
 
         if seed_missing_sections:
-            missing_blocks = build_missing_template_blocks(blocks, metadata)
-            if missing_blocks:
-                logger.info(
-                    "La página no tenía todas las secciones del template; agregando estructura faltante [page_id=%s sections=%s]",
-                    page_id,
-                    len(missing_blocks),
-                )
-                await self._request_with_retry(
-                    "PATCH",
-                    f"https://api.notion.com/v1/blocks/{page_id}/children",
-                    json={"children": missing_blocks},
-                )
-                changed = True
-                blocks = await self._list_block_children(page_id)
+            blocks, seeded = await self._ensure_template_structure(page_id, metadata, blocks)
+            changed = changed or seeded
 
         all_blocks = await self._list_block_children_recursive(page_id)
         block_updates, filled_sections, placeholder_sections = plan_template_block_updates(all_blocks, metadata)
@@ -705,6 +777,57 @@ class NotionClient:
             )
             changed = True
         return changed
+
+    async def _ensure_template_structure(
+        self,
+        page_id: str,
+        metadata: ResolvedBookMetadata,
+        blocks: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], bool]:
+        if _has_template_structure(blocks):
+            return blocks, False
+
+        cloned_template_blocks = await self._load_template_blocks_for_append()
+        if cloned_template_blocks:
+            logger.info(
+                "La página no tenía template; clonando la estructura real del template configurado [page_id=%s blocks=%s]",
+                page_id,
+                len(cloned_template_blocks),
+            )
+            await self._request_with_retry(
+                "PATCH",
+                f"https://api.notion.com/v1/blocks/{page_id}/children",
+                json={"children": cloned_template_blocks},
+            )
+            return await self._list_block_children(page_id), True
+
+        missing_blocks = build_missing_template_blocks(blocks, metadata)
+        if missing_blocks:
+            logger.info(
+                "No se pudo clonar el template real; agregando estructura mínima de fallback [page_id=%s blocks=%s]",
+                page_id,
+                len(missing_blocks),
+            )
+            await self._request_with_retry(
+                "PATCH",
+                f"https://api.notion.com/v1/blocks/{page_id}/children",
+                json={"children": missing_blocks},
+            )
+            return await self._list_block_children(page_id), True
+
+        return blocks, False
+
+    async def _load_template_blocks_for_append(self) -> list[dict[str, Any]]:
+        try:
+            blocks = await self._list_block_children_tree(self._template_id)
+        except Exception as exc:
+            logger.warning("No se pudo leer el template configurado para clonarlo: %s", exc)
+            return []
+
+        cloned = _clone_children_for_append(blocks)
+        if not cloned:
+            logger.warning("El template configurado no devolvió bloques clonables")
+        return cloned
 
     async def _wait_for_page_content(
         self,
@@ -765,6 +888,20 @@ class NotionClient:
 
         await _walk(root_blocks)
         return all_blocks
+
+    async def _list_block_children_tree(self, block_id: str) -> list[dict[str, Any]]:
+        root_blocks = await self._list_block_children(block_id)
+
+        async def _walk(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            hydrated: list[dict[str, Any]] = []
+            for block in blocks:
+                current = dict(block)
+                if current.get("has_children"):
+                    current["children"] = await _walk(await self._list_block_children(current["id"]))
+                hydrated.append(current)
+            return hydrated
+
+        return await _walk(root_blocks)
 
     async def _request_with_retry(
         self,

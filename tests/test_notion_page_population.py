@@ -81,6 +81,17 @@ def test_build_create_properties_infers_genre_from_metadata_when_missing():
     assert props["Order to Read"]["number"] == 3
 
 
+def test_build_create_properties_uses_raw_genre_when_it_is_not_in_known_mapping():
+    metadata = ResolvedBookMetadata(
+        title="Lo que el tiempo olvidó",
+        genre_es="Thriller psicológico",
+    )
+
+    props = build_create_properties(metadata)
+
+    assert props["Genre"]["multi_select"][0]["name"] == "Thriller psicológico"
+
+
 def test_plan_section_appends_uses_new_page_headings_not_template_source():
     page_blocks = [
         _heading("h1", "Book Notes"),

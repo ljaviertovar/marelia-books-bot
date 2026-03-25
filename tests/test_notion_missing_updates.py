@@ -50,7 +50,7 @@ def test_update_existing_book_adds_template_structure_before_filling_missing_dat
     class _TestNotionClient(NotionClient):
         def __init__(self) -> None:
             self.patch_calls: list[tuple[str, dict]] = []
-            self._children_calls = 0
+            self._page_children_calls = 0
 
         async def _request_with_retry(self, method: str, url: str, *, json: dict | None = None, max_attempts: int = 4):
             if method == "PATCH":
@@ -58,19 +58,68 @@ def test_update_existing_book_adds_template_structure_before_filling_missing_dat
             return None
 
         async def _list_block_children(self, block_id: str) -> list[dict]:
-            self._children_calls += 1
-            if self._children_calls == 1:
+            if block_id == "template-123":
+                return [
+                    {
+                        "id": "tpl-callout",
+                        "type": "callout",
+                        "callout": {"rich_text": [{"type": "text", "text": {"content": "Tagline"}}]},
+                    },
+                    {
+                        "id": "tpl-notes-heading",
+                        "type": "heading_2",
+                        "heading_2": {"rich_text": [{"type": "text", "text": {"content": "Book Notes"}}]},
+                    },
+                    {
+                        "id": "tpl-title",
+                        "type": "paragraph",
+                        "paragraph": {"rich_text": [{"type": "text", "text": {"content": "Title:"}}]},
+                    },
+                    {
+                        "id": "tpl-synopsis-heading",
+                        "type": "heading_2",
+                        "heading_2": {"rich_text": [{"type": "text", "text": {"content": "Synopsis"}}]},
+                    },
+                    {
+                        "id": "tpl-synopsis",
+                        "type": "paragraph",
+                        "paragraph": {"rich_text": []},
+                    },
+                    {
+                        "id": "tpl-refs-heading",
+                        "type": "heading_2",
+                        "heading_2": {"rich_text": [{"type": "text", "text": {"content": "References / Links"}}]},
+                    },
+                ]
+
+            self._page_children_calls += 1
+            if self._page_children_calls == 1:
                 return []
             return [
+                {
+                    "id": "page-callout",
+                    "type": "callout",
+                    "callout": {"rich_text": [{"type": "text", "text": {"content": "Tagline"}}]},
+                },
                 {
                     "id": "notes-heading",
                     "type": "heading_2",
                     "heading_2": {"rich_text": [{"type": "text", "text": {"content": "Book Notes"}}]},
                 },
                 {
+                    "id": "title-placeholder",
+                    "type": "paragraph",
+                    "paragraph": {"rich_text": [{"type": "text", "text": {"content": "Title:"}}]},
+                },
+                {
                     "id": "synopsis-heading",
                     "type": "heading_2",
                     "heading_2": {"rich_text": [{"type": "text", "text": {"content": "Synopsis"}}]},
+                },
+                {
+                    "id": "synopsis-placeholder",
+                    "type": "paragraph",
+                    "paragraph": {"rich_text": []},
                 },
                 {
                     "id": "refs-heading",
@@ -82,7 +131,11 @@ def test_update_existing_book_adds_template_structure_before_filling_missing_dat
         async def _list_block_children_recursive(self, block_id: str) -> list[dict]:
             return await self._list_block_children(block_id)
 
+        async def _list_block_children_tree(self, block_id: str) -> list[dict]:
+            return await self._list_block_children(block_id)
+
     client = _TestNotionClient()
+    client._template_id = "template-123"
     record = NotionBookRecord(
         page_id="page-123",
         title="Dune",
@@ -100,9 +153,16 @@ def test_update_existing_book_adds_template_structure_before_filling_missing_dat
     changed = asyncio.run(client.update_book_page_missing(record, metadata))
 
     assert changed is True
-    assert len(client.patch_calls) >= 1
+    assert len(client.patch_calls) >= 2
     url, payload = client.patch_calls[0]
     assert url.endswith("/blocks/page-123/children")
     children = payload["children"]
-    assert children[0]["heading_2"]["rich_text"][0]["text"]["content"] == "Book Notes"
+    assert children[0]["type"] == "callout"
+    assert children[0]["callout"]["rich_text"][0]["text"]["content"] == "Tagline"
+    assert children[1]["heading_2"]["rich_text"][0]["text"]["content"] == "Book Notes"
     assert children[3]["heading_2"]["rich_text"][0]["text"]["content"] == "Synopsis"
+
+    update_urls = [url for url, _ in client.patch_calls[1:]]
+    assert any(url.endswith("/blocks/page-callout") for url in update_urls)
+    assert any(url.endswith("/blocks/title-placeholder") for url in update_urls)
+    assert any(url.endswith("/blocks/synopsis-placeholder") for url in update_urls)

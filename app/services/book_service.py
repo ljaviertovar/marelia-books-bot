@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import logging
+import unicodedata
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -77,6 +78,7 @@ class BookService:
 
     async def process_text_command(self, title: str, chat_id: int) -> ProcessResult:
         logger.info("Buscando '%s' en Open Library...", title)
+        await self._telegram.send_message(chat_id, self._search_started_message())
         # Clear any previous pending selection for this chat
         self._pending.pop(chat_id, None)
         self.clear_input_mode(chat_id)
@@ -184,6 +186,7 @@ class BookService:
     async def process_image_command(self, file_id: str, chat_id: int) -> ProcessResult:
         logger.info("Procesando imagen de portada")
         self.clear_input_mode(chat_id)
+        await self._telegram.send_message(chat_id, self._scan_started_message())
         image_bytes, mime_type, source_image_url = await self._telegram.download_file(file_id)
         logger.debug("Imagen descargada (%d bytes, %s)", len(image_bytes), mime_type)
         try:
@@ -219,7 +222,14 @@ class BookService:
         title = extraction.title or ""
         author = extraction.authors[0] if extraction.authors else None
         resolved = await self._resolver.resolve(title=title, author=author)
-        if not self._titles_match(title, resolved.title):
+        if self._titles_match(title, resolved.title):
+            resolved = resolved.model_copy(
+                update={
+                    "title": title or resolved.title,
+                    "author": author or resolved.author,
+                }
+            )
+        else:
             if self._should_keep_resolved_original_title(extraction, resolved):
                 logger.info(
                     "Open Library parece haber resuelto el título original; conservando original y usando la portada como título en español [%r -> %r]",
@@ -307,12 +317,16 @@ class BookService:
         chat_id: int,
         requested_title: str | None = None,
     ) -> ProcessResult:
+        metadata.title = self._display_title(metadata.title)
+        if metadata.title_es:
+            metadata.title_es = self._display_title(metadata.title_es)
+
         if requested_title:
             requested_norm = normalize_book_text(requested_title)
             metadata_norm = normalize_book_text(metadata.title)
             title_es_norm = normalize_book_text(metadata.title_es)
             if requested_norm and requested_norm != metadata_norm and title_es_norm in {"", metadata_norm}:
-                metadata.title_es = requested_title
+                metadata.title_es = self._display_title(requested_title)
 
         candidates = await self._notion.query_candidate_books(metadata.title)
         existing = find_matching_page(candidates, metadata.title, metadata.author)
@@ -329,14 +343,6 @@ class BookService:
                     ),
                 )
 
-            await self._telegram.send_message(
-                chat_id,
-                (
-                    "⏳ "
-                    f"{self._book(metadata.title_es or metadata.title)} is already in your reading list.\n"
-                    "I'll update the missing information for you now."
-                ),
-            )
             metadata = await self._enricher.enrich(metadata)
             metadata.series = sanitize_series_name(metadata.series)
             changed = await self._notion.update_book_page_missing(existing, metadata)
@@ -344,12 +350,15 @@ class BookService:
             if changed:
                 return ProcessResult(
                     message=(
-                        f"Done!\n🔄 I've updated the missing details for {self._book(metadata.title)} in Notion."
+                        "✅ Done!\n\n"
+                        f"📕 {self._book(metadata.title)} was already in your Reading List.\n"
+                        "I've just updated the missing information."
                     ),
                 )
             return ProcessResult(
                 message=(
-                    f"📚 {html.escape(self._contact_name)}, {self._book(metadata.title)} is already up to date in Notion."
+                    "✅ Done!\n\n"
+                    f"📕 {html.escape(self._contact_name)}, {self._book(metadata.title)} is already up to date in Notion."
                 ),
             )
 
@@ -361,21 +370,14 @@ class BookService:
                 ),
             )
 
-        await self._telegram.send_message(
-            chat_id,
-            (
-                "⏳ "
-                f"I'm adding {self._book(metadata.title_es or metadata.title)} to Notion for you now.\n"
-                "Give me just a little moment."
-            ),
-        )
         metadata = await self._enricher.enrich(metadata)
         metadata.series = sanitize_series_name(metadata.series)
         page_id = await self._notion.create_book_page(metadata)
         logger.info("Libro creado en Notion [id=%s]", page_id)
         return ProcessResult(
             message=(
-                f"Done!\n📚 I've added {self._book(metadata.title)} to your reading list."
+                "✅ Done!\n\n"
+                f"📕 I've added {self._book(metadata.title)} to your reading list."
             ),
         )
 
@@ -414,14 +416,45 @@ class BookService:
         return f"<b>{html.escape(title)}</b>"
 
     @staticmethod
+    def _scan_started_message() -> str:
+        return (
+            "⏳ I'm analyzing that book for you now...\n\n"
+            "Give me a moment while I scan the photo and prepare the book data."
+        )
+
+    @staticmethod
+    def _search_started_message() -> str:
+        return (
+            "⏳ I'm looking for that book for you now...\n\n"
+            "Give me a moment while I search for the best match and prepare the book data."
+        )
+
+    @staticmethod
     def _titles_match(detected_title: str | None, resolved_title: str | None) -> bool:
-        left = normalize_book_text(detected_title)
-        right = normalize_book_text(resolved_title)
+        left = BookService._comparison_title(detected_title)
+        right = BookService._comparison_title(resolved_title)
         if not left or not right:
             return True
         if left == right:
             return True
         return left in right or right in left
+
+    @staticmethod
+    def _comparison_title(value: str | None) -> str:
+        if not value:
+            return ""
+        normalized = unicodedata.normalize("NFKD", value)
+        without_accents = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+        cleaned = without_accents.upper().strip()
+        cleaned = cleaned.replace(":", " ").replace("-", " ")
+        return " ".join(cleaned.split())
+
+    @staticmethod
+    def _display_title(value: str | None) -> str:
+        if not value:
+            return ""
+        text = " ".join(value.strip().split())
+        return text.title()
 
     @staticmethod
     def _should_keep_resolved_original_title(

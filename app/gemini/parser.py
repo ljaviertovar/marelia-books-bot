@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from app.books.metadata import VisionBookExtraction
 
@@ -46,23 +47,52 @@ def parse_enrichment_json(raw_text: str) -> dict[str, str | int | None]:
     """
     parsed = _extract_json_object(raw_text)
     result: dict[str, str | int | None] = {}
-    for key in ("title_es", "genre_es", "synopsis", "tagline", "series"):
-        val = parsed.get(key)
-        result[key] = str(val).strip() if val else None
-    isbn = parsed.get("isbn")
+    text_aliases = {
+        "title_es": ("title_es", "spanish_title", "titulo_es", "titulo"),
+        "genre_es": ("genre_es", "genre", "genero_es", "genero"),
+        "synopsis": ("synopsis", "summary", "descripcion", "description"),
+        "tagline": ("tagline", "blurb", "short_description"),
+        "series": ("series", "series_name", "saga", "book_series"),
+    }
+    for key, aliases in text_aliases.items():
+        result[key] = _first_text_value(parsed, *aliases)
+
+    isbn = _first_text_value(parsed, "isbn", "isbn_13", "isbn_10")
     result["isbn"] = str(isbn).strip() if isbn else None
-    pages = parsed.get("pages")
-    if isinstance(pages, int):
-        result["pages"] = pages
-    elif isinstance(pages, str) and pages.strip().isdigit():
-        result["pages"] = int(pages.strip())
-    else:
-        result["pages"] = None
-    order_to_read = parsed.get("order_to_read")
-    if isinstance(order_to_read, int):
-        result["order_to_read"] = order_to_read
-    elif isinstance(order_to_read, str) and order_to_read.strip().isdigit():
-        result["order_to_read"] = int(order_to_read.strip())
-    else:
-        result["order_to_read"] = None
+    pages = _first_present_value(parsed, "pages", "page_count")
+    result["pages"] = _parse_int_like(pages)
+    order_to_read = _first_present_value(parsed, "order_to_read", "series_position", "number_in_series", "reading_order")
+    result["order_to_read"] = _parse_int_like(order_to_read)
     return result
+
+
+def _parse_int_like(value: object) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        match = re.search(r"\d+", value)
+        if match:
+            return int(match.group(0))
+    return None
+
+
+def _first_present_value(payload: dict, *keys: str) -> object | None:
+    for key in keys:
+        if key in payload and payload[key] is not None:
+            return payload[key]
+    return None
+
+
+def _first_text_value(payload: dict, *keys: str) -> str | None:
+    value = _first_present_value(payload, *keys)
+    if value is None:
+        return None
+    if isinstance(value, list):
+        for item in value:
+            if item:
+                return str(item).strip() or None
+        return None
+    text = str(value).strip()
+    return text or None

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field as dc_field
 from typing import Any, Iterable
+import re
 import unicodedata
 
 import httpx
@@ -187,6 +188,86 @@ def sanitize_series_name(value: str | None) -> str | None:
     return cleaned
 
 
+def _extract_text_value(value: Any) -> str | None:
+    if value is None:
+        return None
+
+    if isinstance(value, str):
+        cleaned = " ".join(value.strip().split())
+        return cleaned or None
+
+    if isinstance(value, (int, float)):
+        return str(value)
+
+    if isinstance(value, list):
+        for item in value:
+            extracted = _extract_text_value(item)
+            if extracted:
+                return extracted
+        return None
+
+    if isinstance(value, dict):
+        for key in ("name", "title", "value", "label", "text"):
+            extracted = _extract_text_value(value.get(key))
+            if extracted:
+                return extracted
+    return None
+
+
+def _extract_first_int(value: Any) -> int | None:
+    if value is None:
+        return None
+
+    if isinstance(value, bool):
+        return None
+
+    if isinstance(value, int):
+        return value
+
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else None
+
+    if isinstance(value, list):
+        for item in value:
+            extracted = _extract_first_int(item)
+            if extracted is not None:
+                return extracted
+        return None
+
+    if isinstance(value, dict):
+        for key in ("value", "number", "position", "sequence", "order"):
+            extracted = _extract_first_int(value.get(key))
+            if extracted is not None:
+                return extracted
+        return None
+
+    text = _extract_text_value(value)
+    if not text:
+        return None
+
+    match = re.search(r"\d+", text)
+    if not match:
+        return None
+    return int(match.group(0))
+
+
+def extract_series_name(payload: dict[str, Any]) -> str | None:
+    for key in ("series", "series_name", "book_series", "saga"):
+        extracted = _extract_text_value(payload.get(key))
+        cleaned = sanitize_series_name(extracted)
+        if cleaned:
+            return cleaned
+    return None
+
+
+def extract_series_order(payload: dict[str, Any]) -> int | None:
+    for key in ("series_position", "number_in_series", "order_in_series", "reading_order", "sequence"):
+        extracted = _extract_first_int(payload.get(key))
+        if extracted is not None:
+            return extracted
+    return None
+
+
 def resolve_openlibrary_cover_url(doc: dict[str, Any]) -> str | None:
     """Pick the most edition-specific OpenLibrary cover URL available in a search doc."""
     cover_edition_key = (doc.get("cover_edition_key") or "").strip()
@@ -272,6 +353,53 @@ def _sort_search_docs(docs: list[dict[str, Any]], title: str, author: str | None
     return sorted(docs, key=sort_key)
 
 
+def _openlibrary_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    description = payload.get("description")
+    if isinstance(description, dict):
+        description = description.get("value")
+    if isinstance(description, str):
+        description = " ".join(description.strip().split())[:160]
+    else:
+        description = None
+
+    return {
+        "title": payload.get("title"),
+        "author_name": (payload.get("author_name") or [None])[0],
+        "series": payload.get("series") or payload.get("series_name") or payload.get("book_series"),
+        "series_position": payload.get("series_position") or payload.get("number_in_series") or payload.get("reading_order"),
+        "subjects": (payload.get("subjects") or payload.get("subject") or [])[:5],
+        "description": description,
+        "key": payload.get("key"),
+    }
+
+
+def _log_openlibrary_result(label: str, payload: dict[str, Any]) -> None:
+    summary = _openlibrary_summary(payload)
+    logger.info("━" * 60)
+    logger.info("📚 OPEN LIBRARY %s", label.upper())
+    logger.info("  title         : %r", summary["title"])
+    logger.info("  author        : %r", summary["author_name"])
+    logger.info("  series        : %r", summary["series"])
+    logger.info("  series_order  : %r", summary["series_position"])
+    logger.info("  subjects      : %s", summary["subjects"])
+    logger.info("  synopsis      : %r", summary["description"])
+    logger.info("  key           : %r", summary["key"])
+    logger.info("━" * 60)
+
+
+def _has_additional_openlibrary_details(base_payload: dict[str, Any], candidate_payload: dict[str, Any]) -> bool:
+    base = _openlibrary_summary(base_payload)
+    candidate = _openlibrary_summary(candidate_payload)
+
+    detail_keys = ("series", "series_position", "subjects", "description")
+    for key in detail_keys:
+        base_value = base.get(key)
+        candidate_value = candidate.get(key)
+        if candidate_value and candidate_value != base_value:
+            return True
+    return False
+
+
 class MetadataResolver:
     def __init__(self, timeout_seconds: float = 10.0) -> None:
         self._client = httpx.AsyncClient(timeout=timeout_seconds)
@@ -284,6 +412,8 @@ class MetadataResolver:
         response = await self._client.get("https://openlibrary.org/search.json", params=params)
         response.raise_for_status()
         docs = _sort_search_docs(response.json().get("docs", []), title)[:limit]
+        if docs:
+            _log_openlibrary_result(f"search top candidate for {title!r}", docs[0])
         candidates = []
         for doc in docs:
             t = (doc.get("title") or title).strip()
@@ -311,6 +441,8 @@ class MetadataResolver:
         if not docs:
             return ResolvedBookMetadata(title=title, author=author)
 
+        _log_openlibrary_result(f"resolved top doc for title={title!r} author={author!r}", docs[0])
+
         metadata = self._doc_to_metadata(docs[0], title, author)
         if author and title and _normalize_search_text(metadata.title) != _normalize_search_text(title):
             metadata.title_es = title
@@ -327,6 +459,7 @@ class MetadataResolver:
                 edition_resp = await self._client.get(f"https://openlibrary.org/books/{edition_key}.json")
                 edition_resp.raise_for_status()
                 edition = edition_resp.json()
+                _log_openlibrary_result(f"edition {edition_key}", edition)
 
                 if not updated.pages:
                     pages_raw = edition.get("number_of_pages")
@@ -351,6 +484,12 @@ class MetadataResolver:
                     if covers:
                         updated.cover_url = f"https://covers.openlibrary.org/b/id/{covers[0]}-L.jpg"
 
+                if not updated.series:
+                    updated.series = extract_series_name(edition)
+
+                if updated.order_to_read is None:
+                    updated.order_to_read = extract_series_order(edition)
+
                 if not work_key:
                     works = edition.get("works") or []
                     if works:
@@ -367,6 +506,8 @@ class MetadataResolver:
                 work_resp = await self._client.get(f"https://openlibrary.org{work_key}.json")
                 work_resp.raise_for_status()
                 work = work_resp.json()
+                if _has_additional_openlibrary_details(doc, work):
+                    _log_openlibrary_result(f"work {work_key}", work)
 
                 if not updated.categories:
                     subjects = work.get("subjects") or []
@@ -383,6 +524,12 @@ class MetadataResolver:
                     covers = work.get("covers") or []
                     if covers:
                         updated.cover_url = f"https://covers.openlibrary.org/b/id/{covers[0]}-L.jpg"
+
+                if not updated.series:
+                    updated.series = extract_series_name(work)
+
+                if updated.order_to_read is None:
+                    updated.order_to_read = extract_series_order(work)
             except Exception as exc:
                 logger.debug("No se pudo enriquecer desde work %s: %s", work_key, exc)
 
@@ -396,7 +543,8 @@ class MetadataResolver:
         logger.debug("Subjects crudos de Open Library: %s", subjects[:20])
         categories = map_categories(subjects)
         reading_type = infer_reading_type(" ".join(doc.get("format") or []))
-        series = sanitize_series_name((doc.get("series") or [None])[0])
+        series = extract_series_name(doc)
+        order_to_read = extract_series_order(doc)
         key = (doc.get("key") or "").strip()
         link = f"https://openlibrary.org{key}" if key else None
 
@@ -415,6 +563,7 @@ class MetadataResolver:
             title=resolved_title,
             author=(resolved_author or hint_author),
             series=series,
+            order_to_read=order_to_read,
             cover_url=cover_url,
             categories=categories,
             reading_type=reading_type,

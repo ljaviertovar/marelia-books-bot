@@ -30,9 +30,11 @@ class GeminiEnricher:
     async def enrich(self, metadata: ResolvedBookMetadata) -> ResolvedBookMetadata:
         """Call Gemini to fill in text fields missing from OpenLibrary."""
         missing = [
-            k for k in ("title_es", "genre_es", "synopsis", "tagline", "isbn", "pages", "order_to_read")
+            k for k in ("title_es", "genre_es", "tagline", "isbn", "pages", "order_to_read")
             if getattr(metadata, k) is None
         ]
+        if self._should_enrich_synopsis(metadata.synopsis):
+            missing.append("synopsis")
         if sanitize_series_name(metadata.series) is None:
             missing.append("series")
         if not missing:
@@ -67,17 +69,18 @@ class GeminiEnricher:
             logger.warning("Gemini enricher falló — el libro se creará sin enriquecimiento: %s", exc)
             return metadata
 
-        logger.info(
-            "Enriquecimiento completado: title_es=%r genre_es=%r synopsis_len=%s tagline=%r isbn=%r pages=%r series=%r order_to_read=%r",
-            updated.title_es,
-            updated.genre_es,
-            len(updated.synopsis) if updated.synopsis else 0,
-            updated.tagline,
-            updated.isbn,
-            updated.pages,
-            updated.series,
-            updated.order_to_read,
-        )
+        logger.info("━" * 60)
+        logger.info("🧠 GEMINI ENRICHER RESULT")
+        logger.info("  title_es            : %r", updated.title_es)
+        logger.info("  genre_es            : %r", updated.genre_es)
+        logger.info("  series              : %r", updated.series)
+        logger.info("  order_to_read       : %r", updated.order_to_read)
+        logger.info("  isbn                : %r", updated.isbn)
+        logger.info("  pages               : %r", updated.pages)
+        logger.info("  tagline             : %r", updated.tagline)
+        logger.info("  synopsis_len        : %s", len(updated.synopsis) if updated.synopsis else 0)
+        logger.info("  synopsis(no spoilers): %r", updated.synopsis)
+        logger.info("━" * 60)
         return updated
 
     @staticmethod
@@ -87,14 +90,23 @@ class GeminiEnricher:
 
         tagline_lower = metadata.tagline.lower()
         series_lower = metadata.series.lower()
-        if series_lower in tagline_lower:
+        mentions_series = series_lower in tagline_lower
+        mentions_order = metadata.order_to_read is not None and str(metadata.order_to_read) in tagline_lower
+
+        if mentions_series and (metadata.order_to_read is None or mentions_order):
             return metadata
 
-        connector = " It belongs to the "
-        if metadata.tagline.endswith((".", "!", "?")):
-            updated_tagline = metadata.tagline + connector + metadata.series + "."
+        if metadata.order_to_read is not None:
+            addition = (
+                f" Forma parte de la serie {metadata.series} y corresponde al libro {metadata.order_to_read}."
+            )
         else:
-            updated_tagline = metadata.tagline + "." + connector + metadata.series + "."
+            addition = f" Forma parte de la serie {metadata.series}."
+
+        if metadata.tagline.endswith((".", "!", "?")):
+            updated_tagline = metadata.tagline + addition
+        else:
+            updated_tagline = metadata.tagline + "." + addition
 
         return metadata.model_copy(update={"tagline": updated_tagline})
 
@@ -110,12 +122,18 @@ class GeminiEnricher:
             known_parts.append(f'- Publisher: "{metadata.publisher}"')
         if metadata.language:
             known_parts.append(f'- Original language: "{metadata.language}"')
+        if metadata.title_es:
+            known_parts.append(f'- Spanish title: "{metadata.title_es}"')
         if metadata.isbn:
             known_parts.append(f'- ISBN: {metadata.isbn}')
         if metadata.pages:
             known_parts.append(f'- Pages: {metadata.pages}')
+        if metadata.synopsis:
+            known_parts.append(f'- Existing synopsis: "{metadata.synopsis}"')
         if metadata.categories:
             known_parts.append(f'- Categories: {", ".join(metadata.categories)}')
+        if metadata.link:
+            known_parts.append(f'- Open Library link: "{metadata.link}"')
         if metadata.series:
             known_parts.append(f'- Existing series hint: "{metadata.series}"')
         if metadata.order_to_read:
@@ -136,13 +154,19 @@ class GeminiEnricher:
             fields_desc.append(
                 '"synopsis": "Sinopsis del libro en español, sin spoilers, máximo 100 palabras. '
                 'Describe la premisa y el tono sin revelar el desenlace. '
+                'Si la sinopsis existente es pobre, demasiado corta, genérica o poco informativa, mejórala. '
+                'No inventes personajes, lugares, giros o tramas que no correspondan a este libro. '
+                'No mezcles información de otros libros del mismo autor ni de títulos parecidos. '
+                'Si ya existe una sinopsis, conserva sus hechos centrales y mejora solo la redacción y claridad. '
+                'Si no puedes determinar una sinopsis fiable para este libro exacto, devuelve null. '
                 'Escríbela en una sola línea, sin saltos de línea."'
             )
         if "tagline" in missing:
             fields_desc.append(
                 '"tagline": "Una descripción breve del libro en español, de 1 a 2 oraciones naturales. '
                 'Debe mencionar el título, el género/tipo de obra y el autor o editor. '
-                'Si el libro pertenece a una serie o saga, menciónala de forma natural en el texto. '
+                'Si el libro pertenece a una serie o saga, menciona la serie de forma natural. '
+                'Si además se conoce el número dentro de la serie, inclúyelo también de forma natural. '
                 'Ejemplo: \'Dune es una novela de ciencia ficción escrita por Frank Herbert.\' '
                 'No uses comillas en el texto de salida."'
             )
@@ -173,11 +197,39 @@ class GeminiEnricher:
         return (
             "You are a book data research assistant. "
             "Given the following known book metadata, fill in the missing fields. "
+            "Use reliable book-catalog knowledge. "
+            "Pay special attention to whether the book belongs to a series or saga. "
+            "If you can identify the series with high confidence, return it in the series field. "
+            "If the reading order inside that series is clearly known, return it too. "
+            "Do not skip the series field when the book is a known installment in a saga. "
+            "Be strict about title-author consistency. "
+            "Do not invent or borrow synopsis details from a different book by the same author or from a similar title. "
+            "When an existing synopsis is provided, treat it as the factual anchor unless it clearly contradicts the rest of the metadata. "
+            "If series membership or reading order is genuinely known, include it; otherwise return null for those fields. "
             "Return ONLY valid JSON, no markdown, no explanation.\n\n"
             "Known book data:\n" + "\n".join(known_parts) + "\n\n"
             "Return exactly this JSON schema:\n"
             "{\n  " + fields_json + "\n}"
         )
+
+    @staticmethod
+    def _should_enrich_synopsis(value: str | None) -> bool:
+        if not value:
+            return True
+
+        cleaned = " ".join(value.strip().split())
+        if len(cleaned) < 110:
+            return True
+
+        lowered = cleaned.lower()
+        weak_patterns = (
+            "novela de",
+            "libro de",
+            "escrito por",
+            "written by",
+            "thriller psicológico escrito por",
+        )
+        return any(pattern in lowered for pattern in weak_patterns) and len(cleaned) < 160
 
     async def _request_with_retry(self, url: str, payload: dict[str, Any], max_attempts: int = 4) -> httpx.Response:
         delay = 1.0

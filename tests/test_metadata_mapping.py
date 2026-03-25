@@ -4,6 +4,8 @@ from app.books.metadata import (
     _extract_work_key,
     _lang_name_from_edition_payload,
     _sort_search_docs,
+    extract_series_name,
+    extract_series_order,
     infer_reading_type,
     map_categories,
     resolve_openlibrary_cover_url,
@@ -28,6 +30,16 @@ def test_sanitize_series_name_rejects_marketing_labels():
     assert sanitize_series_name("Best Seller") is None
     assert sanitize_series_name("New York Times Bestseller") is None
     assert sanitize_series_name("Foundation Series") == "Foundation Series"
+
+
+def test_extract_series_fields_from_varied_openlibrary_shapes():
+    payload = {
+        "series": [{"name": "Reino de Sombras"}],
+        "series_position": "Book 2",
+    }
+
+    assert extract_series_name(payload) == "Reino de Sombras"
+    assert extract_series_order(payload) == 2
 
 
 def test_cover_url_prefers_cover_edition_key_then_edition_key_then_cover_i():
@@ -87,3 +99,38 @@ def test_resolve_sets_title_es_from_query_when_selected_title_differs():
 
     assert metadata.title == "Artemis"
     assert metadata.title_es == "Artemisa"
+
+
+def test_doc_to_metadata_reads_series_and_order_when_present():
+    resolver = MetadataResolver()
+    doc = {
+        "title": "Lo que el tiempo olvidó",
+        "author_name": ["Lorena Franco"],
+        "series_name": "Trilogía del tiempo",
+        "number_in_series": "2",
+    }
+
+    metadata = resolver._doc_to_metadata(doc, "Lo que el tiempo olvidó", "Lorena Franco")
+
+    assert metadata.series == "Trilogía del tiempo"
+    assert metadata.order_to_read == 2
+
+
+def test_openlibrary_summary_includes_series_and_description():
+    from app.books.metadata import _openlibrary_summary
+
+    summary = _openlibrary_summary(
+        {
+            "title": "Lo que el tiempo olvidó",
+            "author_name": ["Lorena Franco"],
+            "series_name": "Trilogía del tiempo",
+            "reading_order": "2",
+            "description": {"value": "Una novela corta sobre recuerdos, tiempo y secretos."},
+            "subjects": ["Thrillers", "Suspense"],
+        }
+    )
+
+    assert summary["title"] == "Lo que el tiempo olvidó"
+    assert summary["series"] == "Trilogía del tiempo"
+    assert summary["series_position"] == "2"
+    assert summary["description"] == "Una novela corta sobre recuerdos, tiempo y secretos."
