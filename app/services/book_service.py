@@ -103,7 +103,7 @@ class BookService:
         return ProcessResult(
             message=(
                 "🔎 "
-                f"{html.escape(self._contact_name)}, I found a few promising matches for {self._book(title)}.\n"
+                f"I found a few promising matches for {self._book(title)}.\n\n"
                 "Send me the author name and I'll narrow it down for you, or send <code>skip</code> and I'll show you the numbered list."
             ),
         )
@@ -195,7 +195,7 @@ class BookService:
             logger.warning("Gemini Vision sin cuota disponible — solicitando fallback manual por texto")
             return ProcessResult(
                 message=(
-                    f"📵 {html.escape(self._contact_name)}, I've reached the vision limit for now.\n"
+                    "👁️🚫 I've reached the vision limit for now.\n\n"
                     "You can still add the book with <code>/addbook &lt;title&gt;</code>."
                 ),
             )
@@ -225,7 +225,7 @@ class BookService:
         if self._titles_match(title, resolved.title):
             resolved = resolved.model_copy(
                 update={
-                    "title": title or resolved.title,
+                    "title": self._matching_title_display(title, resolved.title),
                     "author": author or resolved.author,
                 }
             )
@@ -350,15 +350,15 @@ class BookService:
             if changed:
                 return ProcessResult(
                     message=(
-                        "✅ Done!\n\n"
+                        f"✅ Done!, {html.escape(self._contact_name)}\n\n"
                         f"📕 {self._book(metadata.title)} was already in your Reading List.\n"
                         "I've just updated the missing information."
                     ),
                 )
             return ProcessResult(
                 message=(
-                    "✅ Done!\n\n"
-                    f"📕 {html.escape(self._contact_name)}, {self._book(metadata.title)} is already up to date in Notion."
+                    f"✅ Done!, {html.escape(self._contact_name)}\n\n"
+                    f"📕{self._book(metadata.title)} is already up to date in your Reading List."
                 ),
             )
 
@@ -376,8 +376,8 @@ class BookService:
         logger.info("Libro creado en Notion [id=%s]", page_id)
         return ProcessResult(
             message=(
-                "✅ Done!\n\n"
-                f"📕 I've added {self._book(metadata.title)} to your reading list."
+                f"✅ Done!, {html.escape(self._contact_name)}\n\n"
+                f"I've added 📕 {self._book(metadata.title)} to your reading list."
             ),
         )
 
@@ -396,7 +396,7 @@ class BookService:
 
     def _format_candidate_options(self, candidates: list[BookCandidate]) -> str:
         name = html.escape(self._contact_name)
-        lines = [f"🔎 {name}, here are the closest matches I found:\n"]
+        lines = ["🔎 here are the closest matches I found:\n"]
         for i, c in enumerate(candidates, 1):
             author = c.author or "unknown author"
             details: list[str] = []
@@ -455,6 +455,12 @@ class BookService:
             return ""
         text = " ".join(value.strip().split())
         return text.title()
+
+    @classmethod
+    def _matching_title_display(cls, detected_title: str | None, resolved_title: str | None) -> str:
+        if detected_title:
+            return cls._display_title(detected_title)
+        return cls._display_title(resolved_title)
 
     @staticmethod
     def _should_keep_resolved_original_title(
