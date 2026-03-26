@@ -1,4 +1,9 @@
+import asyncio
+
+import httpx
+
 from app.books.metadata import (
+    BookCandidate,
     MetadataResolver,
     _extract_edition_key,
     _extract_work_key,
@@ -134,3 +139,140 @@ def test_openlibrary_summary_includes_series_and_description():
     assert summary["series"] == "Trilogía del tiempo"
     assert summary["series_position"] == "2"
     assert summary["description"] == "Una novela corta sobre recuerdos, tiempo y secretos."
+
+
+def test_search_candidates_falls_back_to_google_books_when_openlibrary_is_empty():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "openlibrary.org":
+            return httpx.Response(200, json={"docs": []})
+        if request.url.host == "www.googleapis.com":
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "volumeInfo": {
+                                "title": "Artemisa",
+                                "authors": ["Andy Weir"],
+                                "publisher": "Nova",
+                                "publishedDate": "2017-11-14",
+                                "language": "es",
+                            }
+                        }
+                    ]
+                },
+            )
+        raise AssertionError(f"Unexpected URL: {request.url}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    resolver = MetadataResolver(client=client)
+
+    candidates = asyncio.run(resolver.search_candidates("Artemisa", limit=3))
+
+    assert len(candidates) == 1
+    assert candidates[0].title == "Artemisa"
+    assert candidates[0].author == "Andy Weir"
+    assert candidates[0].publisher == "Nova"
+    assert candidates[0].year == 2017
+    assert candidates[0].raw_doc["_source"] == "google_books"
+    asyncio.run(client.aclose())
+
+
+def test_resolve_falls_back_to_google_books_when_openlibrary_has_no_match():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "openlibrary.org":
+            return httpx.Response(200, json={"docs": []})
+        if request.url.host == "www.googleapis.com":
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "volumeInfo": {
+                                "title": "The Pragmatic Programmer",
+                                "authors": ["Andrew Hunt", "David Thomas"],
+                                "description": "Un clasico moderno sobre practica profesional de software.",
+                                "publisher": "Addison-Wesley",
+                                "publishedDate": "1999-10-20",
+                                "pageCount": 352,
+                                "industryIdentifiers": [{"type": "ISBN_13", "identifier": "9780201616224"}],
+                                "imageLinks": {"thumbnail": "http://example.com/pragmatic.jpg"},
+                                "language": "en",
+                                "categories": ["Technology"],
+                                "infoLink": "https://books.google.com/books?id=abc",
+                            }
+                        }
+                    ]
+                },
+            )
+        raise AssertionError(f"Unexpected URL: {request.url}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    resolver = MetadataResolver(client=client)
+
+    metadata = asyncio.run(resolver.resolve(title="The Pragmatic Programmer", author="Andrew Hunt"))
+
+    assert metadata.title == "The Pragmatic Programmer"
+    assert metadata.author == "Andrew Hunt"
+    assert metadata.publisher == "Addison-Wesley"
+    assert metadata.pages == 352
+    assert metadata.isbn == "9780201616224"
+    assert metadata.cover_url == "https://example.com/pragmatic.jpg"
+    assert metadata.language == "inglés"
+    assert metadata.categories == ["Technology"]
+    assert metadata.synopsis == "Un clasico moderno sobre practica profesional de software."
+    assert metadata.link == "https://books.google.com/books?id=abc"
+    asyncio.run(client.aclose())
+
+
+def test_resolve_from_candidate_uses_google_books_to_fill_missing_openlibrary_fields():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "www.googleapis.com":
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "volumeInfo": {
+                                "title": "Dune",
+                                "authors": ["Frank Herbert"],
+                                "description": "En Arrakis, la especia decide el destino del imperio.",
+                                "publisher": "Ace",
+                                "publishedDate": "1965-08-01",
+                                "pageCount": 412,
+                                "industryIdentifiers": [{"type": "ISBN_13", "identifier": "9780441172719"}],
+                                "imageLinks": {"thumbnail": "http://example.com/dune.jpg"},
+                                "language": "en",
+                                "categories": ["Science Fiction"],
+                                "infoLink": "https://books.google.com/books?id=dune",
+                            }
+                        }
+                    ]
+                },
+            )
+        raise AssertionError(f"Unexpected URL: {request.url}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    resolver = MetadataResolver(client=client)
+    candidate = BookCandidate(
+        title="Dune",
+        author="Frank Herbert",
+        raw_doc={
+            "title": "Dune",
+            "author_name": ["Frank Herbert"],
+        },
+    )
+
+    metadata = asyncio.run(resolver.resolve_from_candidate(candidate))
+
+    assert metadata.title == "Dune"
+    assert metadata.author == "Frank Herbert"
+    assert metadata.publisher == "Ace"
+    assert metadata.pages == 412
+    assert metadata.isbn == "9780441172719"
+    assert metadata.cover_url == "https://example.com/dune.jpg"
+    assert metadata.language == "inglés"
+    assert metadata.categories == ["Sci-Fi"]
+    assert metadata.synopsis == "En Arrakis, la especia decide el destino del imperio."
+    assert metadata.link == "https://books.google.com/books?id=dune"
+    asyncio.run(client.aclose())

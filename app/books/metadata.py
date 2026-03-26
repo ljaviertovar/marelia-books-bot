@@ -36,6 +36,31 @@ _LANGUAGE_CODE_MAP: dict[str, str] = {
     "ukr": "ucraniano",
 }
 
+_LANGUAGE_CODE_MAP_2: dict[str, str] = {
+    "en": "inglés",
+    "es": "español",
+    "fr": "francés",
+    "de": "alemán",
+    "it": "italiano",
+    "pt": "portugués",
+    "ru": "ruso",
+    "ja": "japonés",
+    "zh": "chino",
+    "ar": "árabe",
+    "nl": "neerlandés",
+    "sv": "sueco",
+    "no": "noruego",
+    "da": "danés",
+    "pl": "polaco",
+    "ko": "coreano",
+    "la": "latín",
+    "tr": "turco",
+    "el": "griego",
+    "he": "hebreo",
+    "ca": "catalán",
+    "uk": "ucraniano",
+}
+
 ALLOWED_CATEGORIES = {
     "Fantasy",
     "Sci-Fi",
@@ -332,6 +357,96 @@ def _normalize_search_text(value: str | None) -> str:
     return " ".join(text.split())
 
 
+def _google_books_query_variants(title: str, author: str | None = None) -> list[str]:
+    normalized_title = _normalize_search_text(title)
+    normalized_author = _normalize_search_text(author)
+    queries: list[str] = []
+
+    if normalized_title and normalized_author:
+        queries.extend(
+            [
+                f'intitle:"{normalized_title}" inauthor:"{normalized_author}"',
+                f"intitle:{normalized_title} inauthor:{normalized_author}",
+            ]
+        )
+
+    if normalized_title:
+        queries.extend(
+            [
+                f'intitle:"{normalized_title}"',
+                f"intitle:{normalized_title}",
+                normalized_title,
+            ]
+        )
+
+    deduped: list[str] = []
+    seen = set()
+    for query in queries:
+        if query and query not in seen:
+            seen.add(query)
+            deduped.append(query)
+    return deduped
+
+
+def _google_books_best_match(
+    items: list[dict[str, Any]],
+    original_title: str,
+    original_author: str | None = None,
+) -> dict[str, Any] | None:
+    if not items:
+        return None
+
+    target_title = _normalize_search_text(original_title)
+    target_author = _normalize_search_text(original_author)
+
+    def score(item: dict[str, Any]) -> tuple[int, int, int, int]:
+        volume = item.get("volumeInfo") or {}
+        title = _normalize_search_text(volume.get("title"))
+        authors = [_normalize_search_text(author) for author in (volume.get("authors") or [])]
+
+        exact_title = int(bool(target_title) and title == target_title)
+        partial_title = int(bool(target_title) and target_title in title)
+        exact_author = int(bool(target_author) and target_author in authors)
+        partial_author = int(bool(target_author) and any(target_author in author for author in authors))
+        return (-exact_title, -partial_title, -exact_author, -partial_author)
+
+    return sorted(items, key=score)[0]
+
+
+def _google_books_cover_url(volume: dict[str, Any]) -> str | None:
+    image_links = volume.get("imageLinks") or {}
+    url = image_links.get("thumbnail") or image_links.get("smallThumbnail")
+    if not url:
+        return None
+    return str(url).replace("http://", "https://")
+
+
+def _google_books_isbn(volume: dict[str, Any]) -> str | None:
+    identifiers = volume.get("industryIdentifiers") or []
+    for preferred_type in ("ISBN_13", "ISBN_10"):
+        for identifier in identifiers:
+            if identifier.get("type") == preferred_type:
+                value = str(identifier.get("identifier") or "").strip()
+                if value:
+                    return value
+    return None
+
+
+def _google_books_year(volume: dict[str, Any]) -> int | None:
+    published = str(volume.get("publishedDate") or "").strip()
+    match = re.match(r"(\d{4})", published)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _google_books_language(volume: dict[str, Any]) -> str | None:
+    code = str(volume.get("language") or "").strip().lower()
+    if not code:
+        return None
+    return _LANGUAGE_CODE_MAP_2.get(code, code)
+
+
 def _sort_search_docs(docs: list[dict[str, Any]], title: str, author: str | None = None) -> list[dict[str, Any]]:
     target_title = _normalize_search_text(title)
     target_author = _normalize_search_text(author)
@@ -373,6 +488,27 @@ def _openlibrary_summary(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _google_books_summary(item: dict[str, Any]) -> dict[str, Any]:
+    volume = item.get("volumeInfo") or {}
+    description = str(volume.get("description") or "").strip() or None
+    if description:
+        description = " ".join(description.split())[:160]
+
+    return {
+        "title": volume.get("title"),
+        "subtitle": volume.get("subtitle"),
+        "authors": volume.get("authors") or [],
+        "publisher": volume.get("publisher"),
+        "published_date": volume.get("publishedDate"),
+        "language": volume.get("language"),
+        "categories": (volume.get("categories") or [])[:5],
+        "page_count": volume.get("pageCount"),
+        "isbn": _google_books_isbn(volume),
+        "description": description,
+        "link": volume.get("canonicalVolumeLink") or volume.get("infoLink"),
+    }
+
+
 def _log_openlibrary_result(label: str, payload: dict[str, Any]) -> None:
     summary = _openlibrary_summary(payload)
     logger.info("━" * 60)
@@ -384,6 +520,24 @@ def _log_openlibrary_result(label: str, payload: dict[str, Any]) -> None:
     logger.info("  subjects      : %s", summary["subjects"])
     logger.info("  synopsis      : %r", summary["description"])
     logger.info("  key           : %r", summary["key"])
+    logger.info("━" * 60)
+
+
+def _log_google_books_result(label: str, item: dict[str, Any]) -> None:
+    summary = _google_books_summary(item)
+    logger.info("━" * 60)
+    logger.info("📗 GOOGLE BOOKS %s", label.upper())
+    logger.info("  title         : %r", summary["title"])
+    logger.info("  subtitle      : %r", summary["subtitle"])
+    logger.info("  authors       : %s", summary["authors"])
+    logger.info("  publisher     : %r", summary["publisher"])
+    logger.info("  published     : %r", summary["published_date"])
+    logger.info("  language      : %r", summary["language"])
+    logger.info("  categories    : %s", summary["categories"])
+    logger.info("  pages         : %r", summary["page_count"])
+    logger.info("  isbn          : %r", summary["isbn"])
+    logger.info("  synopsis      : %r", summary["description"])
+    logger.info("  link          : %r", summary["link"])
     logger.info("━" * 60)
 
 
@@ -401,52 +555,205 @@ def _has_additional_openlibrary_details(base_payload: dict[str, Any], candidate_
 
 
 class MetadataResolver:
-    def __init__(self, timeout_seconds: float = 10.0) -> None:
-        self._client = httpx.AsyncClient(timeout=timeout_seconds)
+    _GOOGLE_BOOKS_URL = "https://www.googleapis.com/books/v1/volumes"
+
+    def __init__(self, timeout_seconds: float = 10.0, client: httpx.AsyncClient | None = None) -> None:
+        self._client = client or httpx.AsyncClient(timeout=timeout_seconds)
+        self._owns_client = client is None
 
     async def close(self) -> None:
-        await self._client.aclose()
+        if self._owns_client:
+            await self._client.aclose()
 
     async def search_candidates(self, title: str, limit: int = 3) -> list[BookCandidate]:
+        docs: list[dict[str, Any]] = []
         params = {"q": title, "limit": max(limit * 5, 10)}
-        response = await self._client.get("https://openlibrary.org/search.json", params=params)
-        response.raise_for_status()
-        docs = _sort_search_docs(response.json().get("docs", []), title)[:limit]
+        try:
+            response = await self._client.get("https://openlibrary.org/search.json", params=params)
+            response.raise_for_status()
+            docs = _sort_search_docs(response.json().get("docs", []), title)[:limit]
+        except Exception as exc:
+            logger.warning("Falló la búsqueda en Open Library para %r: %s", title, exc)
+
         if docs:
             _log_openlibrary_result(f"search top candidate for {title!r}", docs[0])
-        candidates = []
-        for doc in docs:
-            t = (doc.get("title") or title).strip()
-            a = (doc.get("author_name") or [None])[0]
-            year = doc.get("first_publish_year") or None
-            publisher = (doc.get("publisher") or [None])[0]
-            langs = doc.get("language") or []
-            language = langs[0] if langs else None
-            candidates.append(BookCandidate(title=t, author=a, year=year, publisher=publisher, language=language, raw_doc=doc))
-        return candidates
+            candidates = []
+            for doc in docs:
+                t = (doc.get("title") or title).strip()
+                a = (doc.get("author_name") or [None])[0]
+                year = doc.get("first_publish_year") or None
+                publisher = (doc.get("publisher") or [None])[0]
+                langs = doc.get("language") or []
+                language = langs[0] if langs else None
+                candidates.append(BookCandidate(title=t, author=a, year=year, publisher=publisher, language=language, raw_doc=doc))
+            return candidates
+
+        logger.info("Sin candidatos en Open Library para %r; probando Google Books", title)
+        return await self._search_google_books_candidates(title, limit=limit)
 
     async def resolve_from_candidate(self, candidate: BookCandidate) -> ResolvedBookMetadata:
+        if candidate.raw_doc.get("_source") == "google_books":
+            item = candidate.raw_doc.get("item") or {}
+            return self._google_books_to_metadata(item, candidate.title, candidate.author)
+
         metadata = self._doc_to_metadata(candidate.raw_doc, candidate.title, candidate.author)
-        return await self._enrich_with_openlibrary_details(metadata, candidate.raw_doc)
+        metadata = await self._enrich_with_openlibrary_details(metadata, candidate.raw_doc)
+        return await self._enrich_with_google_books(metadata, candidate.title, candidate.author)
 
     async def resolve(self, *, title: str, author: str | None = None) -> ResolvedBookMetadata:
+        docs: list[dict[str, Any]] = []
         params = {"q": title, "limit": 25}
         if author:
             params["author"] = author
 
-        response = await self._client.get("https://openlibrary.org/search.json", params=params)
-        response.raise_for_status()
-        docs = _sort_search_docs(response.json().get("docs", []), title, author)
+        try:
+            response = await self._client.get("https://openlibrary.org/search.json", params=params)
+            response.raise_for_status()
+            docs = _sort_search_docs(response.json().get("docs", []), title, author)
+        except Exception as exc:
+            logger.warning("Falló la resolución en Open Library para title=%r author=%r: %s", title, author, exc)
 
         if not docs:
-            return ResolvedBookMetadata(title=title, author=author)
+            logger.info("Open Library no devolvió resultados para title=%r author=%r; usando Google Books", title, author)
+            return await self._resolve_with_google_books(title, author)
 
         _log_openlibrary_result(f"resolved top doc for title={title!r} author={author!r}", docs[0])
 
         metadata = self._doc_to_metadata(docs[0], title, author)
         if author and title and _normalize_search_text(metadata.title) != _normalize_search_text(title):
             metadata.title_es = title
-        return await self._enrich_with_openlibrary_details(metadata, docs[0])
+        metadata = await self._enrich_with_openlibrary_details(metadata, docs[0])
+        return await self._enrich_with_google_books(metadata, title, author)
+
+    async def _search_google_books_candidates(self, title: str, limit: int = 3) -> list[BookCandidate]:
+        items = await self._google_books_search(title, limit=limit)
+        candidates: list[BookCandidate] = []
+        for item in items[:limit]:
+            volume = item.get("volumeInfo") or {}
+            candidates.append(
+                BookCandidate(
+                    title=str(volume.get("title") or title).strip(),
+                    author=((volume.get("authors") or [None])[0]),
+                    year=_google_books_year(volume),
+                    publisher=(str(volume.get("publisher") or "").strip() or None),
+                    language=_google_books_language(volume),
+                    raw_doc={"_source": "google_books", "item": item},
+                )
+            )
+        return candidates
+
+    async def _resolve_with_google_books(self, title: str, author: str | None) -> ResolvedBookMetadata:
+        item = await self._google_books_search_best(title, author)
+        if not item:
+            return ResolvedBookMetadata(title=title, author=author)
+        _log_google_books_result(f"resolved fallback for title={title!r} author={author!r}", item)
+        return self._google_books_to_metadata(item, title, author)
+
+    async def _enrich_with_google_books(
+        self,
+        metadata: ResolvedBookMetadata,
+        title: str,
+        author: str | None,
+    ) -> ResolvedBookMetadata:
+        needs_google_books = any(
+            (
+                not metadata.synopsis,
+                not metadata.publisher,
+                metadata.pages is None,
+                not metadata.isbn,
+                not metadata.cover_url,
+                not metadata.categories,
+                not metadata.language,
+                metadata.year is None,
+            )
+        )
+        if not needs_google_books:
+            return metadata
+
+        item = await self._google_books_search_best(title, author)
+        if not item:
+            return metadata
+
+        _log_google_books_result(f"enrichment for title={title!r} author={author!r}", item)
+        google_metadata = self._google_books_to_metadata(item, title, author)
+        merged = metadata.model_copy(
+            update={
+                "cover_url": metadata.cover_url or google_metadata.cover_url,
+                "categories": metadata.categories or google_metadata.categories,
+                "link": metadata.link or google_metadata.link,
+                "isbn": metadata.isbn or google_metadata.isbn,
+                "pages": metadata.pages or google_metadata.pages,
+                "year": metadata.year or google_metadata.year,
+                "publisher": metadata.publisher or google_metadata.publisher,
+                "language": metadata.language or google_metadata.language,
+                "title_es": metadata.title_es or google_metadata.title_es,
+                "synopsis": metadata.synopsis or google_metadata.synopsis,
+            }
+        )
+        return merged
+
+    async def _google_books_search_best(self, title: str, author: str | None) -> dict[str, Any] | None:
+        items = await self._google_books_search(title, author=author, limit=5)
+        return _google_books_best_match(items, title, author)
+
+    async def _google_books_search(
+        self,
+        title: str,
+        author: str | None = None,
+        *,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        for query in _google_books_query_variants(title, author):
+            params = {"q": query, "maxResults": max(limit, 1), "printType": "books"}
+            try:
+                response = await self._client.get(self._GOOGLE_BOOKS_URL, params=params)
+                response.raise_for_status()
+            except Exception as exc:
+                logger.debug("Google Books falló para query %r: %s", query, exc)
+                continue
+
+            items = response.json().get("items") or []
+            if items:
+                logger.info("Google Books devolvió %d resultado(s) para %r", len(items), query)
+                _log_google_books_result(f"top match for query {query!r}", items[0])
+                return items
+        return []
+
+    def _google_books_to_metadata(
+        self,
+        item: dict[str, Any],
+        requested_title: str,
+        hint_author: str | None,
+    ) -> ResolvedBookMetadata:
+        volume = item.get("volumeInfo") or {}
+        resolved_title = str(volume.get("title") or requested_title).strip()
+        resolved_author = (volume.get("authors") or [hint_author])[0]
+        description = str(volume.get("description") or "").strip() or None
+        categories = map_categories(volume.get("categories") or [])
+        link = (
+            str(volume.get("canonicalVolumeLink") or "").strip()
+            or str(volume.get("infoLink") or "").strip()
+            or None
+        )
+
+        metadata = ResolvedBookMetadata(
+            title=resolved_title,
+            subtitle=str(volume.get("subtitle") or "").strip() or None,
+            author=resolved_author or hint_author,
+            cover_url=_google_books_cover_url(volume),
+            categories=categories,
+            link=link,
+            isbn=_google_books_isbn(volume),
+            pages=volume.get("pageCount"),
+            year=_google_books_year(volume),
+            publisher=str(volume.get("publisher") or "").strip() or None,
+            language=_google_books_language(volume),
+            synopsis=description,
+        )
+
+        if requested_title and _normalize_search_text(resolved_title) != _normalize_search_text(requested_title):
+            metadata.title_es = requested_title
+        return metadata
 
     async def _enrich_with_openlibrary_details(self, metadata: ResolvedBookMetadata, doc: dict[str, Any]) -> ResolvedBookMetadata:
         """Get additional data from OpenLibrary edition/work endpoints before Gemini."""
