@@ -59,7 +59,7 @@ def _hello_message() -> str:
     name = html.escape(settings.telegram_contact_name)
     return (
         f"Hi {name} 👋\n\n"
-        "I'm here to help with your reading list.\n"
+        "I'm here to help with your 📚 Reading List.\n"
         "You can send <code>/addbook &lt;title&gt;</code> or a photo with the caption "
         "<code>/scanbook</code>."
     )
