@@ -377,7 +377,7 @@ class BookService:
         return ProcessResult(
             message=(
                 f"✅ Done!, {html.escape(self._contact_name)}\n\n"
-                f"I've added 📕 {self._book(metadata.title)} to your reading list."
+                f"I've added {self._book(metadata.title)} to your 📚 Reading List."
             ),
         )
 
