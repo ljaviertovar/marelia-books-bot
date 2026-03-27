@@ -261,7 +261,7 @@ def _image_block(image_url: str) -> dict[str, Any]:
     }
 
 
-def _clone_block_for_append(block: dict[str, Any]) -> dict[str, Any] | None:
+def _clone_block_for_append(block: dict[str, Any], cover_url: str | None = None) -> dict[str, Any] | None:
     block_type = block.get("type")
     if not block_type:
         return None
@@ -270,7 +270,7 @@ def _clone_block_for_append(block: dict[str, Any]) -> dict[str, Any] | None:
     source = dict(block.get(block_type, {}) or {})
 
     if block_type in {"paragraph", "heading_1", "heading_2", "heading_3", "bulleted_list_item", "numbered_list_item", "quote", "to_do", "toggle", "callout"}:
-        cloned = dict(source)
+        cloned = {k: v for k, v in source.items() if v is not None}
         if "rich_text" in cloned:
             cloned["rich_text"] = _clone_rich_text_segments(cloned.get("rich_text", []))
         if block_type == "callout" and "icon" in cloned:
@@ -294,6 +294,10 @@ def _clone_block_for_append(block: dict[str, Any]) -> dict[str, Any] | None:
                 "caption": _clone_rich_text_segments(image.get("caption", [])),
             }
             return payload
+        # Placeholder image block (not yet filled) — replace with cover if available
+        if cover_url:
+            payload["image"] = {"type": "external", "external": {"url": cover_url}, "caption": []}
+            return payload
         return None
 
     if block_type == "divider":
@@ -303,11 +307,15 @@ def _clone_block_for_append(block: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def _clone_children_for_append(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _clone_children_for_append(blocks: list[dict[str, Any]], cover_url: str | None = None) -> list[dict[str, Any]]:
+    remaining_cover_url = cover_url
     cloned: list[dict[str, Any]] = []
     for block in blocks:
-        payload = _clone_block_for_append(block)
+        payload = _clone_block_for_append(block, remaining_cover_url)
         if payload:
+            # Consume cover_url after the first image block so it's only placed once
+            if payload.get("type") == "image" and remaining_cover_url:
+                remaining_cover_url = None
             cloned.append(payload)
     return cloned
 
@@ -529,9 +537,14 @@ def plan_template_block_updates(page_blocks: list[dict[str, Any]], metadata: Res
                             used_note_labels.add(label)
                         break
 
-        if current_section == "synopsis" and synopsis_placeholder is None:
-            if block_type in {"bulleted_list_item", "numbered_list_item", "paragraph"} and not plain:
-                synopsis_placeholder = block
+        if current_section == "synopsis":
+            if block_type in {"bulleted_list_item", "numbered_list_item", "paragraph"}:
+                if not plain:
+                    if synopsis_placeholder is None:
+                        synopsis_placeholder = block
+                else:
+                    # Already has content — mark filled to prevent duplicate appends
+                    filled_sections.add("synopsis")
     if metadata.synopsis and synopsis_placeholder:
         payload = _replace_block_text_payload(synopsis_placeholder, metadata.synopsis)
         block_id = synopsis_placeholder.get("id")
@@ -625,6 +638,19 @@ def build_missing_template_blocks(page_blocks: list[dict[str, Any]], metadata: R
 
 def _has_template_structure(blocks: list[dict[str, Any]]) -> bool:
     return any(_match_section_name(block) for block in blocks)
+
+
+def _find_pre_section_insert_anchor(blocks: list[dict[str, Any]]) -> str | None:
+    """Return the ID of the last block before the first section heading.
+    Used to insert the cover image at the right position when it's missing."""
+    anchor: str | None = None
+    for block in blocks:
+        if _match_section_name(block) is not None:
+            break
+        block_id = block.get("id")
+        if block_id:
+            anchor = block_id
+    return anchor
 
 
 class NotionClient:
@@ -785,10 +811,29 @@ class NotionClient:
         blocks: list[dict[str, Any]],
     ) -> tuple[list[dict[str, Any]], bool]:
         if _has_template_structure(blocks):
+            # Template structure is present but cover image may still be missing
+            if metadata.cover_url and not any(b.get("type") == "image" for b in blocks):
+                after_block_id = _find_pre_section_insert_anchor(blocks)
+                image_payload: dict[str, Any] = {"children": [_image_block(metadata.cover_url)]}
+                if after_block_id:
+                    image_payload["after"] = after_block_id
+                logger.info(
+                    "Imagen de portada ausente en el template; insertando [page_id=%s after=%s]",
+                    page_id,
+                    after_block_id,
+                )
+                await self._request_with_retry(
+                    "PATCH",
+                    f"https://api.notion.com/v1/blocks/{page_id}/children",
+                    json=image_payload,
+                )
+                return await self._list_block_children(page_id), True
             return blocks, False
 
-        cloned_template_blocks = await self._load_template_blocks_for_append()
+        cloned_template_blocks = await self._load_template_blocks_for_append(metadata.cover_url)
         if cloned_template_blocks:
+            if metadata.cover_url and not any(b.get("type") == "image" for b in cloned_template_blocks):
+                cloned_template_blocks = [_image_block(metadata.cover_url)] + cloned_template_blocks
             logger.info(
                 "La página no tenía template; clonando la estructura real del template configurado [page_id=%s blocks=%s]",
                 page_id,
@@ -817,14 +862,14 @@ class NotionClient:
 
         return blocks, False
 
-    async def _load_template_blocks_for_append(self) -> list[dict[str, Any]]:
+    async def _load_template_blocks_for_append(self, cover_url: str | None = None) -> list[dict[str, Any]]:
         try:
             blocks = await self._list_block_children_tree(self._template_id)
         except Exception as exc:
             logger.warning("No se pudo leer el template configurado para clonarlo: %s", exc)
             return []
 
-        cloned = _clone_children_for_append(blocks)
+        cloned = _clone_children_for_append(blocks, cover_url)
         if not cloned:
             logger.warning("El template configurado no devolvió bloques clonables")
         return cloned
