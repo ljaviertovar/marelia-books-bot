@@ -453,7 +453,7 @@ def _replace_block_rich_text_payload(block: dict[str, Any], rich_text: list[dict
     if block_type not in {"bulleted_list_item", "numbered_list_item", "paragraph", "callout"}:
         return None
 
-    type_data = dict(block.get(block_type, {}))
+    type_data = {k: v for k, v in block.get(block_type, {}).items() if v is not None}
     type_data["rich_text"] = rich_text
     payload: dict[str, Any] = {block_type: type_data}
     payload["type"] = block_type
