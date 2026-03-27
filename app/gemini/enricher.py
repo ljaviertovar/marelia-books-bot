@@ -217,6 +217,11 @@ class GeminiEnricher:
         if not value:
             return True
 
+        # Treat a synopsis with encoding corruption (U+FFFD replacement chars)
+        # as missing so Gemini can provide a clean version.
+        if "\ufffd" in value:
+            return True
+
         cleaned = " ".join(value.strip().split())
         if len(cleaned) < 110:
             return True

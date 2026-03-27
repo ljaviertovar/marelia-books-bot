@@ -350,6 +350,18 @@ def _lang_name_from_edition_payload(payload: dict[str, Any]) -> str | None:
     return None
 
 
+def _sanitize_synopsis(value: str | None) -> str | None:
+    """Remove Unicode replacement characters (U+FFFD) that result from encoding
+    mismatches when fetching third-party API data.  Returns None if the cleaned
+    text is empty.
+    """
+    if not value:
+        return None
+    cleaned = value.replace("\ufffd", "").strip()
+    cleaned = " ".join(cleaned.split())
+    return cleaned or None
+
+
 def _normalize_search_text(value: str | None) -> str:
     text = unicodedata.normalize("NFKD", (value or "").strip().lower())
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
@@ -728,7 +740,7 @@ class MetadataResolver:
         volume = item.get("volumeInfo") or {}
         resolved_title = str(volume.get("title") or requested_title).strip()
         resolved_author = (volume.get("authors") or [hint_author])[0]
-        description = str(volume.get("description") or "").strip() or None
+        description = _sanitize_synopsis(str(volume.get("description") or ""))
         categories = map_categories(volume.get("categories") or [])
         link = (
             str(volume.get("canonicalVolumeLink") or "").strip()
@@ -823,9 +835,9 @@ class MetadataResolver:
                 if not updated.synopsis:
                     description = work.get("description")
                     if isinstance(description, str):
-                        updated.synopsis = description.strip() or None
+                        updated.synopsis = _sanitize_synopsis(description)
                     elif isinstance(description, dict):
-                        updated.synopsis = str(description.get("value") or "").strip() or None
+                        updated.synopsis = _sanitize_synopsis(str(description.get("value") or ""))
 
                 if not updated.cover_url:
                     covers = work.get("covers") or []
