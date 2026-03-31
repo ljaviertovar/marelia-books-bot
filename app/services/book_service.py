@@ -345,7 +345,16 @@ class BookService:
 
             metadata = await self._enricher.enrich(metadata)
             metadata.series = sanitize_series_name(metadata.series)
-            changed = await self._notion.update_book_page_missing(existing, metadata)
+            try:
+                changed = await self._notion.update_book_page_missing(existing, metadata)
+            except Exception as exc:
+                logger.exception("Error al actualizar contenido de página existente [title=%s]: %s", metadata.title, exc)
+                return ProcessResult(
+                    message=(
+                        f"📕 {html.escape(self._contact_name)}, {self._book(metadata.title)} was already in your Reading List\n"
+                        "and I've updated what I could — but some details couldn't be saved due to an unexpected error."
+                    ),
+                )
             logger.info("Campos faltantes actualizados: %s", changed)
             if changed:
                 return ProcessResult(
@@ -372,7 +381,16 @@ class BookService:
 
         metadata = await self._enricher.enrich(metadata)
         metadata.series = sanitize_series_name(metadata.series)
-        page_id = await self._notion.create_book_page(metadata)
+        try:
+            page_id = await self._notion.create_book_page(metadata)
+        except Exception as exc:
+            logger.exception("Error al crear página en Notion [title=%s]: %s", metadata.title, exc)
+            return ProcessResult(
+                message=(
+                    f"📕 {html.escape(self._contact_name)}, {self._book(metadata.title)} has been added to your 📚 Reading List\n"
+                    "but some details couldn't be saved due to an unexpected error."
+                ),
+            )
         logger.info("Libro creado en Notion [id=%s]", page_id)
         return ProcessResult(
             message=(

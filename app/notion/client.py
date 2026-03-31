@@ -433,7 +433,7 @@ def build_section_content(metadata: ResolvedBookMetadata) -> dict[str, list[dict
         content["notes"] = notes_blocks
 
     if metadata.synopsis:
-        content["synopsis"] = [_paragraph_block(metadata.synopsis)]
+        content["synopsis"] = [_paragraph_block(metadata.synopsis[:1900])]
 
     return content
 
@@ -546,7 +546,7 @@ def plan_template_block_updates(page_blocks: list[dict[str, Any]], metadata: Res
                     # Already has content — mark filled to prevent duplicate appends
                     filled_sections.add("synopsis")
     if metadata.synopsis and synopsis_placeholder:
-        payload = _replace_block_text_payload(synopsis_placeholder, metadata.synopsis)
+        payload = _replace_block_text_payload(synopsis_placeholder, metadata.synopsis[:1900])
         block_id = synopsis_placeholder.get("id")
         if payload and block_id:
             updates.append(BlockUpdatePlan(block_id=block_id, payload=payload))
@@ -779,6 +779,24 @@ class NotionClient:
             )
             changed = True
 
+        # Insert cover image only if no image block exists anywhere in the page (including nested blocks)
+        if metadata.cover_url and not any(b.get("type") == "image" for b in all_blocks):
+            after_block_id = _find_pre_section_insert_anchor(blocks)
+            image_payload: dict[str, Any] = {"children": [_image_block(metadata.cover_url)]}
+            if after_block_id:
+                image_payload["after"] = after_block_id
+            logger.info(
+                "Imagen de portada ausente en la página; insertando [page_id=%s after=%s]",
+                page_id,
+                after_block_id,
+            )
+            await self._request_with_retry(
+                "PATCH",
+                f"https://api.notion.com/v1/blocks/{page_id}/children",
+                json=image_payload,
+            )
+            changed = True
+
         append_plans = [
             plan
             for plan in plan_section_appends(blocks, metadata)
@@ -811,23 +829,6 @@ class NotionClient:
         blocks: list[dict[str, Any]],
     ) -> tuple[list[dict[str, Any]], bool]:
         if _has_template_structure(blocks):
-            # Template structure is present but cover image may still be missing
-            if metadata.cover_url and not any(b.get("type") == "image" for b in blocks):
-                after_block_id = _find_pre_section_insert_anchor(blocks)
-                image_payload: dict[str, Any] = {"children": [_image_block(metadata.cover_url)]}
-                if after_block_id:
-                    image_payload["after"] = after_block_id
-                logger.info(
-                    "Imagen de portada ausente en el template; insertando [page_id=%s after=%s]",
-                    page_id,
-                    after_block_id,
-                )
-                await self._request_with_retry(
-                    "PATCH",
-                    f"https://api.notion.com/v1/blocks/{page_id}/children",
-                    json=image_payload,
-                )
-                return await self._list_block_children(page_id), True
             return blocks, False
 
         cloned_template_blocks = await self._load_template_blocks_for_append(metadata.cover_url)
