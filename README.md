@@ -19,7 +19,22 @@ Single-purpose Telegram bot service that adds books to one fixed Notion Reading 
 - Notion API
 
 ## Setup
-1. Create and activate a Python 3.11+ environment.
+1. Create and activate a Python 3.11+ virtual environment (Linux/macOS):
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+python -m pip install --upgrade pip
+```
+
+On Windows (PowerShell):
+
+```powershell
+python -m venv venv
+venv\\Scripts\\Activate.ps1
+python -m pip install --upgrade pip
+```
+
 2. Install dependencies:
 
 ```bash

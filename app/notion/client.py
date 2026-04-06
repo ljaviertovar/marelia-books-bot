@@ -739,16 +739,33 @@ class NotionClient:
         blocks = await self._wait_for_page_content(page_id)
         if not _has_template_structure(blocks):
             logger.warning(
-                "El template no apareció a tiempo; reintentando una vez más antes de continuar sin template [page_id=%s]",
+                "El template no apareció a tiempo; intentando aplicar/clonar el template manualmente [page_id=%s]",
                 page_id,
             )
-            blocks = await self._wait_for_page_content(page_id, max_attempts=4, delay_seconds=1.0)
-            if not _has_template_structure(blocks):
-                logger.warning(
-                    "El template no estuvo disponible tras el reintento; la página se conservará sin template [page_id=%s]",
-                    page_id,
-                )
-                return
+            # Intentar aplicar/clonar la estructura del template un par de veces
+            seeded = False
+            attempts = 3
+            for attempt in range(1, attempts + 1):
+                try:
+                    new_blocks, seeded = await self._ensure_template_structure(page_id, metadata, blocks)
+                    if seeded:
+                        blocks = new_blocks
+                        logger.info("Template aplicado/clonado correctamente en el intento %s [page_id=%s]", attempt, page_id)
+                        break
+                except Exception as exc:  # pragma: no cover - best-effort retry
+                    logger.warning("Error intentando clonar el template (intento %s): %s", attempt, exc)
+                if attempt < attempts:
+                    await asyncio.sleep(1.0)
+
+            if not seeded:
+                # Último intento: esperar un poco más por el template que pueda venir desde Notion
+                blocks = await self._wait_for_page_content(page_id, max_attempts=4, delay_seconds=1.0)
+                if not _has_template_structure(blocks):
+                    logger.warning(
+                        "El template no estuvo disponible tras los reintentos; la página se conservará sin template [page_id=%s]",
+                        page_id,
+                    )
+                    return
 
         await self._ensure_page_content(page_id, metadata, blocks=blocks)
 
@@ -831,26 +848,35 @@ class NotionClient:
         if _has_template_structure(blocks):
             return blocks, False
 
-        cloned_template_blocks = await self._load_template_blocks_for_append(metadata.cover_url)
-        if cloned_template_blocks:
-            if metadata.cover_url and not any(b.get("type") == "image" for b in cloned_template_blocks):
-                cloned_template_blocks = [_image_block(metadata.cover_url)] + cloned_template_blocks
-            logger.info(
-                "La página no tenía template; clonando la estructura real del template configurado [page_id=%s blocks=%s]",
-                page_id,
-                len(cloned_template_blocks),
-            )
-            await self._request_with_retry(
-                "PATCH",
-                f"https://api.notion.com/v1/blocks/{page_id}/children",
-                json={"children": cloned_template_blocks},
-            )
-            return await self._list_block_children(page_id), True
+        # Intentar clonar el template real varias veces antes de caer al fallback
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            cloned_template_blocks = await self._load_template_blocks_for_append(metadata.cover_url)
+            if cloned_template_blocks:
+                if metadata.cover_url and not any(b.get("type") == "image" for b in cloned_template_blocks):
+                    cloned_template_blocks = [_image_block(metadata.cover_url)] + cloned_template_blocks
+                logger.info(
+                    "La página no tenía template; clonando la estructura real del template configurado [page_id=%s blocks=%s attempt=%s]",
+                    page_id,
+                    len(cloned_template_blocks),
+                    attempt,
+                )
+                await self._request_with_retry(
+                    "PATCH",
+                    f"https://api.notion.com/v1/blocks/{page_id}/children",
+                    json={"children": cloned_template_blocks},
+                )
+                return await self._list_block_children(page_id), True
 
+            logger.debug("No se pudo clonar el template (intento %s) — reintentando", attempt)
+            if attempt < attempts:
+                await asyncio.sleep(1.0)
+
+        # Si no se pudo clonar el template real tras varios intentos, usar estructura mínima de fallback
         missing_blocks = build_missing_template_blocks(blocks, metadata)
         if missing_blocks:
             logger.info(
-                "No se pudo clonar el template real; agregando estructura mínima de fallback [page_id=%s blocks=%s]",
+                "No se pudo clonar el template real tras reintentos; agregando estructura mínima de fallback [page_id=%s blocks=%s]",
                 page_id,
                 len(missing_blocks),
             )
