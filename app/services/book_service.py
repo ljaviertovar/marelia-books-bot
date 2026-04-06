@@ -356,18 +356,21 @@ class BookService:
                     ),
                 )
             logger.info("Campos faltantes actualizados: %s", changed)
+            page_url = self._notion_page_url(existing.page_id)
             if changed:
                 return ProcessResult(
                     message=(
                         f"✅ Done!, {html.escape(self._contact_name)}\n\n"
                         f"📕 {self._book(metadata.title)} was already in your Reading List.\n"
-                        "I've just updated the missing information."
+                        f"I've just updated the missing information.\n"
+                        f"🔗 <a href=\"{page_url}\">Open in Notion</a>"
                     ),
                 )
             return ProcessResult(
                 message=(
                     f"✅ Done!, {html.escape(self._contact_name)}\n\n"
-                    f"📕{self._book(metadata.title)} is already up to date in your Reading List."
+                    f"📕 {self._book(metadata.title)} is already up to date in your Reading List.\n"
+                    f"🔗 <a href=\"{page_url}\">Open in Notion</a>"
                 ),
             )
 
@@ -392,10 +395,12 @@ class BookService:
                 ),
             )
         logger.info("Libro creado en Notion [id=%s]", page_id)
+        page_url = self._notion_page_url(page_id)
         return ProcessResult(
             message=(
                 f"✅ Done!, {html.escape(self._contact_name)}\n\n"
-                f"I've added {self._book(metadata.title)} to your 📚 Reading List."
+                f"I've added {self._book(metadata.title)} to your 📚 Reading List.\n"
+                f"🔗 <a href=\"{page_url}\">Open in Notion</a>"
             ),
         )
 
@@ -428,6 +433,10 @@ class BookService:
             lines.append(f"{i}. <b>{html.escape(c.title)}</b> — {html.escape(author)}{html.escape(extra)}")
         lines.append(f"\n🔢 Send me a number between 1 and {len(candidates)}.")
         return "\n".join(lines)
+
+    @staticmethod
+    def _notion_page_url(page_id: str) -> str:
+        return f"https://www.notion.so/{page_id.replace('-', '')}"
 
     @staticmethod
     def _book(title: str) -> str:
