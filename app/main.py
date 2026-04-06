@@ -135,7 +135,7 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
             await telegram_client.send_message(
                 chat_id,
                 (
-                    f"😉 Got it!, {html.escape(settings.telegram_contact_name)}\n\n"
+                    f"😉 Got it! {html.escape(settings.telegram_contact_name)}\n\n"
                     "Send me the book title 📝."
                 ),
             )
@@ -146,7 +146,7 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
             await telegram_client.send_message(
                 chat_id,
                 (
-                    f"😉 Got it!, {html.escape(settings.telegram_contact_name)}\n\n"
+                    f"😉 Got it! {html.escape(settings.telegram_contact_name)}\n\n"
                     f"Send me the cover 📸 photo."
                 ),
             )
