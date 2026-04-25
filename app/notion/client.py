@@ -705,11 +705,13 @@ class NotionClient:
     async def create_book_page(self, metadata: ResolvedBookMetadata) -> str:
         logger.info("Creando página en Notion: '%s' de %s", metadata.title, metadata.author or "autor desconocido")
 
-        payload = {
+        payload: dict[str, Any] = {
             "parent": {"database_id": self._database_id},
             "properties": build_create_properties(metadata),
             "template": {"type": "template_id", "template_id": self._template_id},
         }
+        if metadata.cover_url:
+            payload["cover"] = {"type": "external", "external": {"url": metadata.cover_url}}
 
         logger.debug("Payload para Notion:\n%s", json.dumps(payload, indent=2))
 
@@ -722,15 +724,20 @@ class NotionClient:
     async def update_book_page_missing(self, record: NotionBookRecord, metadata: ResolvedBookMetadata) -> bool:
         content_changed = await self._ensure_page_content(record.page_id, metadata, seed_missing_sections=True)
         updates = build_missing_update_properties(record._raw_properties, metadata)
-        if not updates:
+        patch_payload: dict[str, Any] = {}
+        if updates:
+            patch_payload["properties"] = updates
+        if metadata.cover_url and not record.page_cover_url:
+            patch_payload["cover"] = {"type": "external", "external": {"url": metadata.cover_url}}
+        if not patch_payload:
             logger.debug("Sin campos que actualizar en Notion [page_id=%s]", record.page_id)
             return content_changed
 
-        logger.info("Actualizando campos en Notion: %s [page_id=%s]", list(updates.keys()), record.page_id)
+        logger.info("Actualizando campos en Notion: %s [page_id=%s]", list(patch_payload.keys()), record.page_id)
         await self._request_with_retry(
             "PATCH",
             f"https://api.notion.com/v1/pages/{record.page_id}",
-            json={"properties": updates},
+            json=patch_payload,
         )
         logger.info("Campos actualizados en Notion [page_id=%s]", record.page_id)
         return True

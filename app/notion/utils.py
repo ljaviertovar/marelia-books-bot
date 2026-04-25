@@ -12,6 +12,7 @@ class NotionBookRecord:
     title: str | None
     author: str | None
     series: str | None
+    page_cover_url: str | None = field(default=None, repr=False, compare=False)
     # Raw properties kept internally for update operations (not for matching logic)
     _raw_properties: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
@@ -22,11 +23,18 @@ def flatten_notion_pages(pages: list[dict[str, Any]]) -> list[NotionBookRecord]:
 
 def _flatten_page(page: dict[str, Any]) -> NotionBookRecord:
     props = page.get("properties") or {}
+    cover = page.get("cover") or {}
+    page_cover_url: str | None = None
+    if cover.get("type") == "external":
+        page_cover_url = (cover.get("external") or {}).get("url") or None
+    elif cover.get("type") == "file":
+        page_cover_url = (cover.get("file") or {}).get("url") or None
     return NotionBookRecord(
         page_id=page["id"],
         title=_extract_title(props.get("Book Name")),
         author=_extract_rich_text(props.get("Author")),
         series=_extract_rich_text(props.get("Book Series")),
+        page_cover_url=page_cover_url,
         _raw_properties=props,
     )
 
