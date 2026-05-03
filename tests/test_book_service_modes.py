@@ -120,7 +120,9 @@ def test_process_image_command_keeps_vision_title_when_openlibrary_mismatches():
     assert service.captured_metadata is not None
     assert service.captured_metadata.title == "El monje que vendio su ferrari"
     assert service.captured_metadata.author == "Robin S. Sharma"
-    assert service.captured_metadata.cover_url == "https://example.com/cover.jpg"
+    # Telegram file URLs are ephemeral and must NOT be used as cover.
+    # When Open Library has no cover the field stays None.
+    assert service.captured_metadata.cover_url is None
     assert service.captured_metadata.categories == ["Self-development"]
     assert service.captured_metadata.link == "https://openlibrary.org/works/OL123W"
     assert telegram.messages
@@ -130,7 +132,7 @@ def test_process_image_command_keeps_vision_title_when_openlibrary_mismatches():
     )
 
 
-def test_process_image_command_prefers_uploaded_cover_over_openlibrary_cover():
+def test_process_image_command_keeps_openlibrary_cover_and_ignores_telegram_url():
     class _Telegram:
         def __init__(self) -> None:
             self.messages: list[tuple[int, str]] = []
@@ -177,7 +179,7 @@ def test_process_image_command_prefers_uploaded_cover_over_openlibrary_cover():
     asyncio.run(service.process_image_command("file-456", 123))
 
     assert service.captured_metadata is not None
-    assert service.captured_metadata.cover_url == "https://example.com/uploaded-cover.jpg"
+    assert service.captured_metadata.cover_url == "https://example.com/openlibrary-cover.jpg"  # Telegram URL discarded; permanent OL URL kept
     assert telegram.messages[0][1] == "⏳ I'm analyzing that book for you now...\n\nGive me a moment while I scan the photo and prepare the book data."
 
 
@@ -236,7 +238,7 @@ def test_process_image_command_keeps_original_title_when_openlibrary_found_trans
     assert service.captured_metadata.title_es == "Hacia la Fundacion"
     assert service.captured_metadata.categories == ["Sci-Fi"]
     assert service.captured_metadata.link == "https://openlibrary.org/works/OL27448W"
-    assert service.captured_metadata.cover_url == "https://example.com/foundation-cover.jpg"
+    assert service.captured_metadata.cover_url == "https://example.com/openlibrary-foundation.jpg"  # Telegram URL discarded; permanent OL URL kept
     assert telegram.messages[0][1] == "⏳ I'm analyzing that book for you now...\n\nGive me a moment while I scan the photo and prepare the book data."
 
 

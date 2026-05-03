@@ -724,10 +724,14 @@ class NotionClient:
     async def update_book_page_missing(self, record: NotionBookRecord, metadata: ResolvedBookMetadata) -> bool:
         content_changed = await self._ensure_page_content(record.page_id, metadata, seed_missing_sections=True)
         updates = build_missing_update_properties(record._raw_properties, metadata)
+        # Cover property must always be synced when a cover URL is available so that
+        # the property, the page cover and the image block in the body all agree.
+        if metadata.cover_url:
+            updates["Cover"] = _file_prop(metadata.cover_url)
         patch_payload: dict[str, Any] = {}
         if updates:
             patch_payload["properties"] = updates
-        if metadata.cover_url and not record.page_cover_url:
+        if metadata.cover_url:
             patch_payload["cover"] = {"type": "external", "external": {"url": metadata.cover_url}}
         if not patch_payload:
             logger.debug("Sin campos que actualizar en Notion [page_id=%s]", record.page_id)

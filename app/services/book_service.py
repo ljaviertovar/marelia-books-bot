@@ -187,7 +187,7 @@ class BookService:
         logger.info("Procesando imagen de portada")
         self.clear_input_mode(chat_id)
         await self._telegram.send_message(chat_id, self._scan_started_message())
-        image_bytes, mime_type, source_image_url = await self._telegram.download_file(file_id)
+        image_bytes, mime_type, _telegram_file_url = await self._telegram.download_file(file_id)
         logger.debug("Imagen descargada (%d bytes, %s)", len(image_bytes), mime_type)
         try:
             extraction = await self._vision.extract_book_data(image_bytes, mime_type)
@@ -265,8 +265,10 @@ class BookService:
         resolved.series = sanitize_series_name(resolved.series)
         if extraction.series_or_edition and not resolved.series:
             resolved.series = sanitize_series_name(extraction.series_or_edition)
-        # For scanned books, the user's photo is the most reliable cover source.
-        resolved.cover_url = source_image_url
+        # NOTE: the Telegram file URL (_telegram_file_url) is intentionally NOT used as
+        # the cover source because those URLs contain the bot token, are ephemeral, and
+        # expire — causing "Not Found" in Notion after a short time.
+        # resolved.cover_url already holds the permanent Open Library URL (if any).
 
         logger.info(
             "Metadatos resueltos: '%s' — %s",
