@@ -219,6 +219,13 @@ class BookService:
         if check is not None:
             return check
 
+        cover_file_upload_id: str | None = None
+        if not self._dry_run:
+            try:
+                cover_file_upload_id = await self._notion.upload_cover_image(image_bytes, mime_type)
+            except Exception as exc:
+                logger.warning("No se pudo subir la imagen de portada a Notion; continuando sin cover: %s", exc)
+
         title = extraction.title or ""
         author = extraction.authors[0] if extraction.authors else None
         resolved = await self._resolver.resolve(title=title, author=author)
@@ -268,7 +275,9 @@ class BookService:
         # NOTE: the Telegram file URL (_telegram_file_url) is intentionally NOT used as
         # the cover source because those URLs contain the bot token, are ephemeral, and
         # expire — causing "Not Found" in Notion after a short time.
-        # resolved.cover_url already holds the permanent Open Library URL (if any).
+        # The scanned image bytes are uploaded directly to Notion (cover_file_upload_id).
+        if cover_file_upload_id:
+            resolved.cover_file_upload_id = cover_file_upload_id
 
         logger.info(
             "Metadatos resueltos: '%s' — %s",

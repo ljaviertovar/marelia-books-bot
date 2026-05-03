@@ -70,6 +70,10 @@ def _file_prop(url: str) -> dict[str, Any]:
     return {"files": [{"type": "external", "name": "Cover", "external": {"url": url}}]}
 
 
+def _file_prop_upload(file_upload_id: str) -> dict[str, Any]:
+    return {"files": [{"type": "file_upload", "name": "cover.jpg", "file_upload": {"id": file_upload_id}}]}
+
+
 def _select_prop(name: str) -> dict[str, Any]:
     return {"select": {"name": name}}
 
@@ -254,8 +258,18 @@ def _image_block(image_url: str) -> dict[str, Any]:
         "object": "block",
         "type": "image",
         "image": {
-            "type": "external",
             "external": {"url": image_url},
+            "caption": [],
+        },
+    }
+
+
+def _image_block_upload(file_upload_id: str) -> dict[str, Any]:
+    return {
+        "object": "block",
+        "type": "image",
+        "image": {
+            "file_upload": {"id": file_upload_id},
             "caption": [],
         },
     }
@@ -296,7 +310,7 @@ def _clone_block_for_append(block: dict[str, Any], cover_url: str | None = None)
             return payload
         # Placeholder image block (not yet filled) — replace with cover if available
         if cover_url:
-            payload["image"] = {"type": "external", "external": {"url": cover_url}, "caption": []}
+            payload["image"] = {"external": {"url": cover_url}, "caption": []}
             return payload
         return None
 
@@ -369,7 +383,9 @@ def _metadata_property_values(metadata: ResolvedBookMetadata) -> dict[str, dict[
         properties["Book Series"] = _rich_text_prop(metadata.series)
     if metadata.order_to_read is not None:
         properties["Order to Read"] = _number_prop(metadata.order_to_read)
-    if metadata.cover_url:
+    if metadata.cover_file_upload_id:
+        properties["Cover"] = _file_prop_upload(metadata.cover_file_upload_id)
+    elif metadata.cover_url:
         properties["Cover"] = _file_prop(metadata.cover_url)
     if categories:
         properties["Genre"] = _multi_select_prop(categories)
@@ -486,6 +502,19 @@ def _replace_image_block_payload(block: dict[str, Any], image_url: str) -> dict[
     return payload
 
 
+def _replace_image_block_payload_upload(block: dict[str, Any], file_upload_id: str) -> dict[str, Any] | None:
+    if block.get("type") != "image":
+        return None
+    caption = (block.get("image", {}) or {}).get("caption", [])
+    return {
+        "type": "image",
+        "image": {
+            "file_upload": {"id": file_upload_id},
+            "caption": caption,
+        },
+    }
+
+
 def _notes_label_values(metadata: ResolvedBookMetadata) -> dict[str, str]:
     values: dict[str, str] = {}
     _append_standard_note_values(values, metadata)
@@ -514,7 +543,7 @@ def plan_template_block_updates(page_blocks: list[dict[str, Any]], metadata: Res
             if not plain or lowered.startswith("notion tip:") or "tagline" in lowered:
                 tagline_placeholder = block
 
-        if metadata.cover_url and cover_placeholder is None and block_type == "image":
+        if (metadata.cover_url or metadata.cover_file_upload_id) and cover_placeholder is None and block_type == "image":
             cover_placeholder = block
 
         matched_section = _match_section_name(block)
@@ -561,8 +590,11 @@ def plan_template_block_updates(page_blocks: list[dict[str, Any]], metadata: Res
             updates.append(BlockUpdatePlan(block_id=block_id, payload=payload))
             filled_sections.add("notes")
 
-    if metadata.cover_url and cover_placeholder:
-        payload = _replace_image_block_payload(cover_placeholder, metadata.cover_url)
+    if (metadata.cover_url or metadata.cover_file_upload_id) and cover_placeholder:
+        if metadata.cover_file_upload_id:
+            payload = _replace_image_block_payload_upload(cover_placeholder, metadata.cover_file_upload_id)
+        else:
+            payload = _replace_image_block_payload(cover_placeholder, metadata.cover_url)
         block_id = cover_placeholder.get("id")
         if payload and block_id:
             updates.append(BlockUpdatePlan(block_id=block_id, payload=payload))
@@ -619,8 +651,11 @@ def build_missing_template_blocks(page_blocks: list[dict[str, Any]], metadata: R
     section_content = build_section_content(metadata)
     blocks: list[dict[str, Any]] = []
 
-    if metadata.cover_url and not any(block.get("type") == "image" for block in page_blocks):
-        blocks.append(_image_block(metadata.cover_url))
+    if (metadata.cover_file_upload_id or metadata.cover_url) and not any(block.get("type") == "image" for block in page_blocks):
+        if metadata.cover_file_upload_id:
+            blocks.append(_image_block_upload(metadata.cover_file_upload_id))
+        else:
+            blocks.append(_image_block(metadata.cover_url))
 
     for section in _REQUIRED_TEMPLATE_SECTIONS:
         if section in present_sections:
@@ -655,6 +690,7 @@ def _find_pre_section_insert_anchor(blocks: list[dict[str, Any]]) -> str | None:
 
 class NotionClient:
     def __init__(self, api_key: str, database_id: str, template_id: str, timeout_seconds: float = 20.0) -> None:
+        self._api_key = api_key
         self._database_id = database_id
         self._template_id = template_id
         self._client = httpx.AsyncClient(
@@ -702,6 +738,36 @@ class NotionClient:
         )
         return records
 
+    async def upload_cover_image(self, image_bytes: bytes, mime_type: str) -> str:
+        """Upload image bytes to Notion and return the file_upload id."""
+        ext = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp"}.get(mime_type, ".jpg")
+        filename = f"cover{ext}"
+        response = await self._request_with_retry(
+            "POST",
+            "https://api.notion.com/v1/file_uploads",
+            json={"filename": filename, "content_type": mime_type},
+        )
+        data = response.json()
+        file_upload_id: str = data["id"]
+        upload_url: str = data["upload_url"]
+        await self._send_file_multipart(upload_url, image_bytes, mime_type, filename)
+        logger.info("Imagen subida a Notion [file_upload_id=%s]", file_upload_id)
+        return file_upload_id
+
+    async def _send_file_multipart(self, upload_url: str, image_bytes: bytes, mime_type: str, filename: str) -> None:
+        async with httpx.AsyncClient(timeout=60.0) as upload_client:
+            response = await upload_client.post(
+                upload_url,
+                files={"file": (filename, image_bytes, mime_type)},
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    "Notion-Version": NOTION_VERSION,
+                },
+            )
+            if response.is_error:
+                logger.error("Error al subir imagen a Notion %s — %s", response.status_code, response.text)
+                raise RuntimeError(f"Notion file upload failed {response.status_code}: {response.text}")
+
     async def create_book_page(self, metadata: ResolvedBookMetadata) -> str:
         logger.info("Creando página en Notion: '%s' de %s", metadata.title, metadata.author or "autor desconocido")
 
@@ -710,7 +776,9 @@ class NotionClient:
             "properties": build_create_properties(metadata),
             "template": {"type": "template_id", "template_id": self._template_id},
         }
-        if metadata.cover_url:
+        if metadata.cover_file_upload_id:
+            payload["cover"] = {"type": "file_upload", "file_upload": {"id": metadata.cover_file_upload_id}}
+        elif metadata.cover_url:
             payload["cover"] = {"type": "external", "external": {"url": metadata.cover_url}}
 
         logger.debug("Payload para Notion:\n%s", json.dumps(payload, indent=2))
@@ -724,14 +792,18 @@ class NotionClient:
     async def update_book_page_missing(self, record: NotionBookRecord, metadata: ResolvedBookMetadata) -> bool:
         content_changed = await self._ensure_page_content(record.page_id, metadata, seed_missing_sections=True)
         updates = build_missing_update_properties(record._raw_properties, metadata)
-        # Cover property must always be synced when a cover URL is available so that
+        # Cover property must always be synced when a cover is available so that
         # the property, the page cover and the image block in the body all agree.
-        if metadata.cover_url:
+        if metadata.cover_file_upload_id:
+            updates["Cover"] = _file_prop_upload(metadata.cover_file_upload_id)
+        elif metadata.cover_url:
             updates["Cover"] = _file_prop(metadata.cover_url)
         patch_payload: dict[str, Any] = {}
         if updates:
             patch_payload["properties"] = updates
-        if metadata.cover_url:
+        if metadata.cover_file_upload_id:
+            patch_payload["cover"] = {"type": "file_upload", "file_upload": {"id": metadata.cover_file_upload_id}}
+        elif metadata.cover_url:
             patch_payload["cover"] = {"type": "external", "external": {"url": metadata.cover_url}}
         if not patch_payload:
             logger.debug("Sin campos que actualizar en Notion [page_id=%s]", record.page_id)
@@ -808,9 +880,14 @@ class NotionClient:
             changed = True
 
         # Insert cover image only if no image block exists anywhere in the page (including nested blocks)
-        if metadata.cover_url and not any(b.get("type") == "image" for b in all_blocks):
+        has_cover = bool(metadata.cover_file_upload_id or metadata.cover_url)
+        if has_cover and not any(b.get("type") == "image" for b in all_blocks):
             after_block_id = _find_pre_section_insert_anchor(blocks)
-            image_payload: dict[str, Any] = {"children": [_image_block(metadata.cover_url)]}
+            if metadata.cover_file_upload_id:
+                image_child = _image_block_upload(metadata.cover_file_upload_id)
+            else:
+                image_child = _image_block(metadata.cover_url)
+            image_payload: dict[str, Any] = {"children": [image_child]}
             if after_block_id:
                 image_payload["after"] = after_block_id
             logger.info(
@@ -864,8 +941,11 @@ class NotionClient:
         for attempt in range(1, attempts + 1):
             cloned_template_blocks = await self._load_template_blocks_for_append(metadata.cover_url)
             if cloned_template_blocks:
-                if metadata.cover_url and not any(b.get("type") == "image" for b in cloned_template_blocks):
-                    cloned_template_blocks = [_image_block(metadata.cover_url)] + cloned_template_blocks
+                if not any(b.get("type") == "image" for b in cloned_template_blocks):
+                    if metadata.cover_file_upload_id:
+                        cloned_template_blocks = [_image_block_upload(metadata.cover_file_upload_id)] + cloned_template_blocks
+                    elif metadata.cover_url:
+                        cloned_template_blocks = [_image_block(metadata.cover_url)] + cloned_template_blocks
                 logger.info(
                     "La página no tenía template; clonando la estructura real del template configurado [page_id=%s blocks=%s attempt=%s]",
                     page_id,

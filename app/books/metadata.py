@@ -145,6 +145,9 @@ class ResolvedBookMetadata(BaseModel):
     series: str | None = None
     order_to_read: int | None = None
     cover_url: str | None = None
+    # When set, this Notion-hosted file upload ID is used for all cover surfaces
+    # (page cover, Cover property, image block in body) instead of cover_url.
+    cover_file_upload_id: str | None = None
     categories: list[str] = Field(default_factory=list)
     reading_type: str = "Physical"
     link: str | None = None
