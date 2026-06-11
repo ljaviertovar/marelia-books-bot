@@ -33,14 +33,18 @@ class GeminiVisionClient:
     async def close(self) -> None:
         await self._client.aclose()
 
-    async def extract_book_data(self, image_bytes: bytes, mime_type: str) -> VisionBookExtraction:
+    async def extract_book_data(
+        self, image_bytes: bytes, mime_type: str
+    ) -> VisionBookExtraction:
         encoded = base64.b64encode(image_bytes).decode("ascii")
         logger.info("Enviando imagen a Gemini (%d bytes)", len(image_bytes))
         extraction: VisionBookExtraction | None = None
         last_error: Exception | None = None
 
         for max_output_tokens in (1200, 2000):
-            payload = self._build_payload(encoded, mime_type, max_output_tokens=max_output_tokens)
+            payload = self._build_payload(
+                encoded, mime_type, max_output_tokens=max_output_tokens
+            )
             url = f"{_GEMINI_URL}?key={self._api_key}"
             response = await self._request_with_retry(url, payload)
             data = response.json()
@@ -63,7 +67,9 @@ class GeminiVisionClient:
                     break
 
         if extraction is None:
-            raise GeminiVisionResponseError(f"Gemini returned an unusable vision response: {last_error}")
+            raise GeminiVisionResponseError(
+                f"Gemini returned an unusable vision response: {last_error}"
+            )
 
         logger.info("━" * 60)
         logger.info("📖 GEMINI EXTRACTION RESULT")
@@ -80,7 +86,9 @@ class GeminiVisionClient:
         return extraction
 
     @staticmethod
-    def _build_payload(encoded_image: str, mime_type: str, *, max_output_tokens: int) -> dict[str, Any]:
+    def _build_payload(
+        encoded_image: str, mime_type: str, *, max_output_tokens: int
+    ) -> dict[str, Any]:
         return {
             "contents": [
                 {
@@ -99,15 +107,15 @@ class GeminiVisionClient:
                                 "'book 2', 'tomo 3', 'volumen 1', include that clue in series_or_edition. "
                                 "Prefer the real series name over marketing labels. "
                                 "Schema: "
-                                "{\"is_book_cover\": true, "
-                                "\"title\": \"string | null\", "
-                                "\"subtitle\": \"string | null\", "
-                                "\"authors\": [\"string\"], "
-                                "\"series_or_edition\": \"string | null\", "
-                                "\"language\": \"string | null\", "
-                                "\"confidence\": 0.0, "
-                                "\"reason_if_not_book\": \"string | null\", "
-                                "\"raw_visible_text\": \"string | null\"}"
+                                '{"is_book_cover": true, '
+                                '"title": "string | null", '
+                                '"subtitle": "string | null", '
+                                '"authors": ["string"], '
+                                '"series_or_edition": "string | null", '
+                                '"language": "string | null", '
+                                '"confidence": 0.0, '
+                                '"reason_if_not_book": "string | null", '
+                                '"raw_visible_text": "string | null"}'
                             ),
                         },
                         {
@@ -123,11 +131,13 @@ class GeminiVisionClient:
                 "temperature": 0,
                 "responseMimeType": "application/json",
                 "maxOutputTokens": max_output_tokens,
-                "media_resolution": "MEDIA_RESOLUTION_HIGH",
+                "mediaResolution": "MEDIA_RESOLUTION_HIGH",
             },
         }
 
-    async def _request_with_retry(self, url: str, payload: dict[str, Any], max_attempts: int = 4) -> httpx.Response:
+    async def _request_with_retry(
+        self, url: str, payload: dict[str, Any], max_attempts: int = 4
+    ) -> httpx.Response:
         delay = 1.0
         last_error: Exception | None = None
 
@@ -135,8 +145,19 @@ class GeminiVisionClient:
             try:
                 response = await self._client.post(url, json=payload)
                 if response.status_code == 429:
-                    logger.warning("Gemini Vision respondió 429 — cuota agotada, se omite visión")
-                    raise GeminiVisionQuotaError("HTTP 429 — Gemini Vision quota exhausted")
+                    logger.warning(
+                        "Gemini Vision respondió 429 — cuota agotada, se omite visión"
+                    )
+                    raise GeminiVisionQuotaError(
+                        "HTTP 429 — Gemini Vision quota exhausted"
+                    )
+
+                if response.status_code == 400:
+                    body = response.text[:500]
+                    logger.error(
+                        "Gemini respondió 400 — payload inválido. Cuerpo: %s", body
+                    )
+                    raise RuntimeError(f"Gemini 400 Bad Request: {body}")
 
                 if response.status_code in (500, 502, 503, 504):
                     retry_after = float(response.headers.get("Retry-After", delay))
@@ -146,7 +167,9 @@ class GeminiVisionClient:
                         attempt,
                         retry_after,
                     )
-                    last_error = RuntimeError(f"HTTP {response.status_code} después de {attempt} intento(s)")
+                    last_error = RuntimeError(
+                        f"HTTP {response.status_code} después de {attempt} intento(s)"
+                    )
                     if attempt == max_attempts:
                         break
                     await self._sleep(retry_after)
@@ -155,7 +178,11 @@ class GeminiVisionClient:
 
                 response.raise_for_status()
                 return response
-            except (httpx.TimeoutException, httpx.TransportError, httpx.HTTPStatusError) as exc:
+            except (
+                httpx.TimeoutException,
+                httpx.TransportError,
+                httpx.HTTPStatusError,
+            ) as exc:
                 last_error = exc
                 if attempt == max_attempts:
                     break
@@ -177,7 +204,9 @@ class GeminiVisionClient:
             content = candidates[0].get("content", {})
             parts = content.get("parts", [])
             if parts:
-                return "".join(str(part.get("text", "")) for part in parts if part.get("text"))
+                return "".join(
+                    str(part.get("text", "")) for part in parts if part.get("text")
+                )
         return ""
 
     @staticmethod
