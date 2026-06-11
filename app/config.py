@@ -13,7 +13,12 @@ from pydantic import BaseModel, ValidationError
 class Settings(BaseModel):
     telegram_bot_token: str
     telegram_contact_name: str = "Taviz"
-    gemini_api_key: str
+    # Gemini via AI Studio API key (local / free tier)
+    gemini_api_key: str = ""
+    # Gemini via Vertex AI (production — no geographic restrictions)
+    gcp_project: str | None = None
+    gcp_location: str = "us-central1"
+    google_service_account_json: str | None = None
     notion_api_key: str
     notion_database_id: str
     notion_template_id: str
@@ -21,7 +26,9 @@ class Settings(BaseModel):
     dry_run: bool = False
 
 
-_NOTION_ID_RE = re.compile(r"([0-9a-fA-F]{32}|[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})")
+_NOTION_ID_RE = re.compile(
+    r"([0-9a-fA-F]{32}|[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})"
+)
 
 
 def _require_non_empty(name: str, raw: str) -> str:
@@ -46,13 +53,13 @@ def _normalize_notion_id(name: str, raw: str) -> str:
     )
 
 
-
 def _parse_allowed_chat_ids(raw: str) -> Set[int]:
     values = [item.strip() for item in raw.split(",") if item.strip()]
     if not values:
-        raise RuntimeError("Environment variable ALLOWED_CHAT_IDS must contain at least one chat id")
+        raise RuntimeError(
+            "Environment variable ALLOWED_CHAT_IDS must contain at least one chat id"
+        )
     return {int(item) for item in values}
-
 
 
 def _parse_bool(raw: str | None) -> bool:
@@ -61,16 +68,37 @@ def _parse_bool(raw: str | None) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-
 def get_settings() -> Settings:
     try:
+        gemini_api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+        gcp_project = os.environ.get("GCP_PROJECT", "").strip() or None
+        gcp_location = (
+            os.environ.get("GCP_LOCATION", "us-central1").strip() or "us-central1"
+        )
+        google_service_account_json = (
+            os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip() or None
+        )
+
+        if not gemini_api_key and not (gcp_project and google_service_account_json):
+            raise RuntimeError(
+                "Either GEMINI_API_KEY or both GCP_PROJECT and GOOGLE_SERVICE_ACCOUNT_JSON must be set"
+            )
+
         return Settings(
             telegram_bot_token=_require_non_empty(
                 "TELEGRAM_BOT_TOKEN", os.environ["TELEGRAM_BOT_TOKEN"]
             ),
-            telegram_contact_name=os.environ.get("TELEGRAM_CONTACT_NAME", "Taviz").strip() or "Taviz",
-            gemini_api_key=_require_non_empty("GEMINI_API_KEY", os.environ["GEMINI_API_KEY"]),
-            notion_api_key=_require_non_empty("NOTION_API_KEY", os.environ["NOTION_API_KEY"]),
+            telegram_contact_name=os.environ.get(
+                "TELEGRAM_CONTACT_NAME", "Taviz"
+            ).strip()
+            or "Taviz",
+            gemini_api_key=gemini_api_key,
+            gcp_project=gcp_project,
+            gcp_location=gcp_location,
+            google_service_account_json=google_service_account_json,
+            notion_api_key=_require_non_empty(
+                "NOTION_API_KEY", os.environ["NOTION_API_KEY"]
+            ),
             notion_database_id=_normalize_notion_id(
                 "NOTION_DATABASE_ID", os.environ["NOTION_DATABASE_ID"]
             ),
@@ -81,10 +109,11 @@ def get_settings() -> Settings:
             dry_run=_parse_bool(os.environ.get("DRY_RUN")),
         )
     except KeyError as exc:
-        raise RuntimeError(f"Missing required environment variable: {exc.args[0]}") from exc
+        raise RuntimeError(
+            f"Missing required environment variable: {exc.args[0]}"
+        ) from exc
     except (ValueError, ValidationError) as exc:
         raise RuntimeError(f"Invalid environment configuration: {exc}") from exc
-
 
 
 _R = "\033[0m"

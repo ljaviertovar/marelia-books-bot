@@ -36,8 +36,18 @@ app = FastAPI(title="Marelia Books")
 
 deduplicator = UpdateDeduplicator()
 telegram_client = TelegramClient(settings.telegram_bot_token)
-vision_client = GeminiVisionClient(settings.gemini_api_key)
-enricher_client = GeminiEnricher(settings.gemini_api_key)
+vision_client = GeminiVisionClient(
+    api_key=settings.gemini_api_key or None,
+    gcp_project=settings.gcp_project,
+    gcp_location=settings.gcp_location,
+    service_account_json=settings.google_service_account_json,
+)
+enricher_client = GeminiEnricher(
+    api_key=settings.gemini_api_key or None,
+    gcp_project=settings.gcp_project,
+    gcp_location=settings.gcp_location,
+    service_account_json=settings.google_service_account_json,
+)
 notion_client = NotionClient(
     settings.notion_api_key,
     settings.notion_database_id,
@@ -75,7 +85,9 @@ async def startup() -> None:
     try:
         await telegram_client.set_my_commands()
     except Exception as exc:
-        logger.warning("No se pudieron registrar los slash commands de Telegram: %s", exc)
+        logger.warning(
+            "No se pudieron registrar los slash commands de Telegram: %s", exc
+        )
 
 
 @app.post("/telegram/webhook")
@@ -113,8 +125,12 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
                 result = await book_service.process_text_command(text, chat_id)
             elif update.message.photo and book_service.is_waiting_for_photo(chat_id):
                 logger.info("Photo received after /scanbook [chat_id=%s]", chat_id)
-                photo = sorted(update.message.photo, key=lambda x: x.width * x.height)[-1]
-                result = await book_service.process_image_command(photo.file_id, chat_id)
+                photo = sorted(update.message.photo, key=lambda x: x.width * x.height)[
+                    -1
+                ]
+                result = await book_service.process_image_command(
+                    photo.file_id, chat_id
+                )
             else:
                 log_incoming_command(update, command)
                 logger.info("Comando no reconocido [chat_id=%s]", chat_id)

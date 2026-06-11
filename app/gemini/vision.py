@@ -13,7 +13,7 @@ from app.gemini.parser import GeminiJSONParseError, parse_vision_json
 
 logger = logging.getLogger(__name__)
 
-_MODEL = "gemini-3-flash-preview"
+_MODEL = "gemini-2.5-flash"
 _PROMPT = (
     "You are a strict JSON extractor for book covers. "
     "Return JSON only, no markdown, no explanation. "
@@ -47,11 +47,62 @@ class GeminiVisionResponseError(RuntimeError):
     """Raised when Gemini Vision returns an unusable response."""
 
 
+def _build_genai_client(
+    *,
+    api_key: str | None,
+    gcp_project: str | None,
+    gcp_location: str,
+    service_account_json: str | None,
+    timeout_ms: int,
+) -> genai.Client:
+    http_options = types.HttpOptions(timeout=timeout_ms)
+    if service_account_json and gcp_project:
+        import json
+        from google.oauth2 import service_account
+
+        raw = service_account_json.strip()
+        # dotenv may split a multiline JSON across lines — find the closing brace
+        try:
+            info = json.loads(raw)
+        except json.JSONDecodeError:
+            # Try extracting just the first complete JSON object
+            decoder = json.JSONDecoder()
+            info, _ = decoder.raw_decode(raw)
+        credentials = service_account.Credentials.from_service_account_info(
+            info,
+            scopes=["https://www.googleapis.com/auth/cloud-platform"],
+        )
+        logger.info(
+            "Gemini client: Vertex AI (project=%s, location=%s)",
+            gcp_project,
+            gcp_location,
+        )
+        return genai.Client(
+            vertexai=True,
+            project=gcp_project,
+            location=gcp_location,
+            credentials=credentials,
+            http_options=http_options,
+        )
+    logger.info("Gemini client: AI Studio (API key)")
+    return genai.Client(api_key=api_key, http_options=http_options)
+
+
 class GeminiVisionClient:
-    def __init__(self, api_key: str, timeout_seconds: float = 30.0) -> None:
-        self._client = genai.Client(
+    def __init__(
+        self,
+        api_key: str | None = None,
+        gcp_project: str | None = None,
+        gcp_location: str = "us-central1",
+        service_account_json: str | None = None,
+        timeout_seconds: float = 30.0,
+    ) -> None:
+        self._client = _build_genai_client(
             api_key=api_key,
-            http_options=types.HttpOptions(timeout=int(timeout_seconds * 1000)),
+            gcp_project=gcp_project,
+            gcp_location=gcp_location,
+            service_account_json=service_account_json,
+            timeout_ms=int(timeout_seconds * 1000),
         )
 
     async def close(self) -> None:
@@ -67,6 +118,7 @@ class GeminiVisionClient:
         for max_output_tokens in (1200, 2000):
             contents = [
                 types.Content(
+                    role="user",
                     parts=[
                         types.Part(text=_PROMPT),
                         types.Part(
@@ -74,7 +126,7 @@ class GeminiVisionClient:
                                 mime_type=mime_type, data=image_bytes
                             )
                         ),
-                    ]
+                    ],
                 )
             ]
             config = types.GenerateContentConfig(
